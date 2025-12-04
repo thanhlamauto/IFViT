@@ -1,29 +1,215 @@
-# IFViT: Interpretable Fixed-Length Representation for Fingerprint Matching via Vision Transformer
-<p align="center"><img src="figs/FVIT Structure.jpg" width="1000"/></p>
+# IFViT-JAX: Fingerprint Matching with JAX/Flax
 
-## IFViT
-### Abstract
-Determining dense feature points on fingerprints used in constructing deep fixed-length representations for accurate matching, particularly at the pixel level, is of significant interest. To explore the interpretability of  fingerprint matching, we propose a multi-stage interpretable fingerprint matching network, namely Interpretable Fixed-length Representation for Fingerprint Matching via Vision Transformer (IFViT), which consists of two primary modules. The first module, an interpretable dense registration module, establishes a Vision Transformer (ViT)-based Siamese Network to capture long-range dependencies and the global context in fingerprint pairs. It provides interpretable dense pixel-wise correspondences of feature points for fingerprint alignment and enhances the interpretability in the subsequent matching stage. The second module takes into account both local and global representations of the aligned fingerprint pair to achieve an interpretable fixed-length representation extraction and matching. It employs the ViTs trained in the first module with the additional fully connected layer and retrains them to simultaneously produce the discriminative fixed-length representation and interpretable dense pixel-wise correspondences of feature points. Extensive experimental results on diverse publicly available fingerprint databases demonstrate that the proposed framework not only exhibits superior performance on dense registration and matching but also significantly promotes the interpretability in deep fixed-length representations-based fingerprint matching.
-### Demonstration
-<p align="center"><img src="figs/Samples of registration.jpg" width="1000"/></p>
-<p align="center"><img src="figs/Samples of intepretability.jpg" width="1000"/></p>
+Fingerprint matching system using dense correspondence learning and metric learning, implemented in JAX/Flax.
 
-## Requirements
-* python==3.8.10
-* accelerate==0.20.3
-* einops==0.7.0
-* kornia==0.6.9
-* matplotlib==3.5.0
-* numpy==1.21.1
-* opencv-python==4.6.0.66
-* pytorch-metric-learning==2.3.0
-* torch==1.13.1
-* torchvision==0.14.1
-* tqdm==4.63.0
-* vit-pytorch==1.6.5
+## 📁 Project Structure
 
-## Remark
-Since our work has been submitted and is currently under review at the IEEE Transactions on Information Forensics and Security (TIFS), only partial non-core codes have been released for verification purposes. The complete code will be organized and made available upon the acceptance and publication of this work.
+```
+ifvit-jax/
+├── config.py          # Configuration dictionaries
+├── data.py            # Data loading and augmentation (TODO: implement with real data)
+├── models.py          # Model architectures (ResNet-18, Transformers, Matcher)
+├── losses.py          # Loss functions (L_D, L_E, L_A) and score fusion
+├── train_dense.py     # Training script for Module 1 (Dense Registration)
+├── train_match.py     # Training script for Module 2 (Matcher)
+├── train_all.py       # End-to-end training script (Module 1 → Module 2)
+├── infer.py           # Inference and verification
+└── ut/                # Utility modules
+    ├── utils.py           # General utilities (checkpointing, logging, metrics)
+    ├── enhance_and_roi.py  # FingerNet enhancement and ROI extraction
+    ├── alignment.py       # Image alignment using RANSAC
+    └── preprocess_fingernet.py  # Offline preprocessing script
+```
 
-## Acknowledgement
-In terms of the reproduction of DeepPrint, we referred to and modified the implementation provided by [fixed-length-fingerprint-extractors](https://github.com/tim-rohwedder/fixed-length-fingerprint-extractors). Many thanks for their wonderful work.
+## 🏗️ Architecture Overview
+
+### Module 1: Dense Registration
+- **Goal**: Learn dense pixel-to-pixel correspondences
+- **Model**: ResNet-18 + Siamese Transformer + Dense Matching Head
+- **Loss**: L_D (dense correspondence loss)
+- **Output**: Matching probability matrix P
+
+### Module 2: Fingerprint Matcher
+- **Goal**: Fingerprint verification using global + local features
+- **Model**: ResNet-18 + Siamese Transformer + Embedding Heads
+- **Losses**:
+  - L_D: Dense correspondence loss (optional)
+  - L_E: Cosine embedding loss
+  - L_A: ArcFace loss
+- **Output**: Normalized embeddings for verification
+
+## 🚀 Usage
+
+### Training Module 1 (Dense Registration)
+
+```bash
+python train_dense.py \
+    --dataset_root /path/to/dataset \
+    --checkpoint_dir ./checkpoints/dense_reg
+```
+
+**Note**: `data.py` is currently stubbed out. Once you have real data, implement the dataset loading functions.
+
+### Training Module 2 (Matcher)
+
+```bash
+python train_match.py \
+    --dataset_root /path/to/dataset \
+    --num_classes 100 \
+    --pretrained_ckpt ./checkpoints/dense_reg/dense_reg_ckpt.pkl \
+    --checkpoint_dir ./checkpoints/matcher
+```
+
+### Inference/Verification
+
+```bash
+python infer.py \
+    --img1 /path/to/fingerprint1.png \
+    --img2 /path/to/fingerprint2.png \
+    --dense_ckpt ./checkpoints/dense_reg/dense_reg_ckpt.pkl \
+    --matcher_ckpt ./checkpoints/matcher/matcher_ckpt.pkl
+```
+
+## ⚙️ Configuration
+
+### DENSE_CONFIG (Module 1)
+```python
+{
+    "image_size": 128,
+    "batch_size": 64,
+    "lr": 3e-4,
+    "num_epochs": 50,
+    "lambda_D": 1.0,  # Only L_D loss
+}
+```
+
+### MATCH_CONFIG (Module 2)
+```python
+{
+    "image_size": 224,
+    "batch_size": 32,
+    "lr": 1e-4,
+    "num_epochs": 40,
+    "lambda_D": 0.5,
+    "lambda_E": 0.1,
+    "lambda_A": 1.0,
+    "roi_size": 90,
+}
+```
+
+## 📊 Model Components
+
+### ResNet-18 Backbone
+- Extracts feature maps at 1/8 resolution
+- Shape: (B, H/8, W/8, 256)
+
+### Siamese Transformer
+- Self-attention on each feature map
+- Cross-attention between feature maps
+- Refines features for matching
+
+### Dense Matching Head
+- Computes correlation matrix
+- Applies dual-softmax for soft correspondences
+- Output: (B, N, N) matching probability matrix
+
+### Embedding Head
+- Projects features to fixed-length embeddings
+- L2 normalization
+- Output: (B, 256) normalized embeddings
+
+## 🔬 Loss Functions
+
+### L_D: Dense Correspondence Loss
+Encourages high probability for ground-truth correspondences.
+
+### L_E: Cosine Embedding Loss
+- Genuine pairs: maximize similarity
+- Imposter pairs: push below margin
+
+### L_A: ArcFace Loss
+Discriminative feature learning with angular margin.
+
+## 📝 TODOs
+
+### Data Pipeline (`data.py`)
+All functions in `data.py` are currently stubbed out. When you have real data, implement:
+
+1. **load_image()**: Load fingerprint images
+2. **list_pairs()**: Parse dataset structure and create pair lists
+3. **random_corrupt_fingerprint()**: Augmentation pipeline
+4. **generate_gt_correspondences()**: Create ground-truth matches from known transforms
+5. **compute_overlap_and_rois()**: Extract overlapping regions and ROI patches
+6. **dense_reg_dataset()**: Batch generator for Module 1
+7. **matcher_dataset()**: Batch generator for Module 2
+
+### Dataset Structure
+Expected structure (example):
+```
+dataset/
+├── train/
+│   ├── subject_001/
+│   │   ├── finger1_impression1.png
+│   │   ├── finger1_impression2.png
+│   │   └── ...
+│   ├── subject_002/
+│   └── ...
+├── val/
+└── test/
+```
+
+## 🎯 Verification Pipeline
+
+1. **Alignment**: Try multiple rotations to find best alignment
+2. **Embedding Extraction**: 
+   - Global features from full images
+   - Local features from ROI patches
+3. **Score Computation**:
+   - Global similarity score
+   - Local similarity score
+   - Fused score (weighted average)
+4. **Decision**: Compare fused score against threshold
+
+## 📦 Dependencies
+
+```bash
+pip install jax jaxlib flax optax
+pip install numpy opencv-python
+```
+
+For TPU support:
+```bash
+pip install jax[tpu] -f https://storage.googleapis.com/jax-releases/libtpu_releases.html
+```
+
+## 🔧 TPU Deployment
+
+The code is designed to be TPU-ready. To scale to TPU v5e-8:
+
+1. Use `jax.pmap` or `jax.pjit` for data parallelism
+2. Shard batches across TPU cores
+3. Update training loops with multi-device support
+
+Example:
+```python
+# Replicate state across devices
+state = flax.jax_utils.replicate(state)
+
+# Use pmap for parallel training
+train_step_pmap = jax.pmap(train_step, axis_name='batch')
+```
+
+## 📄 License
+
+[Your license here]
+
+## 🤝 Citation
+
+If you use this code, please cite:
+```
+[Your citation]
+```
+
+## 📧 Contact
+
+[Your contact information]

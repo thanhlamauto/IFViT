@@ -18,8 +18,14 @@ from pathlib import Path
 from config import INFER_CONFIG, DENSE_CONFIG, MATCH_CONFIG
 from models import DenseRegModel, MatcherModel
 from losses import compute_matching_score
+import sys
+from pathlib import Path
+# Add root to path for data module
+root_path = Path(__file__).parent.parent
+if str(root_path) not in sys.path:
+    sys.path.insert(0, str(root_path))
 from data import compute_overlap_and_rois, normalize_image
-from utils import load_checkpoint
+from ut.utils import load_checkpoint
 
 
 # ============================================================================

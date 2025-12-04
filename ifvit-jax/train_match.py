@@ -16,8 +16,14 @@ from pathlib import Path
 from config import MATCH_CONFIG
 from models import MatcherModel
 from losses import total_loss_matcher
+import sys
+from pathlib import Path
+# Add root to path for data module
+root_path = Path(__file__).parent.parent
+if str(root_path) not in sys.path:
+    sys.path.insert(0, str(root_path))
 from data import matcher_dataset, preprocess_batch
-from utils import (
+from ut.utils import (
     save_checkpoint, load_checkpoint, load_pretrained_weights,
     Logger, print_model_summary, count_parameters
 )
@@ -88,7 +94,7 @@ def create_train_state(
         print(f"{'='*60}\n")
         
         try:
-            from load_module1_weights import load_module1_transformer_weights
+            from ut.load_module1_weights import load_module1_transformer_weights
             
             # Share transformer weights between global and local branches
             # This is more faithful to paper: single ViT trained in Module 1

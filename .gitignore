@@ -52,7 +52,6 @@ ENV/
 Thumbs.db
 
 # Datasets
-data/
 datasets/
 *.tfrecord
 

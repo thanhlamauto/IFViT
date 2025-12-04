@@ -10,7 +10,7 @@ __version__ = "0.1.0"
 from . import config
 from . import models
 from . import losses
-from . import utils
+from . import ut
 
 # Make key classes/functions easily accessible
 from .models import DenseRegModel, MatcherModel, ResNet18
@@ -20,7 +20,7 @@ from .losses import (
     arcface_loss,
     compute_matching_score
 )
-from .utils import (
+from .ut.utils import (
     save_checkpoint,
     load_checkpoint,
     Logger
@@ -47,5 +47,5 @@ __all__ = [
     'config',
     'models',
     'losses',
-    'utils',
+    'ut',
 ]

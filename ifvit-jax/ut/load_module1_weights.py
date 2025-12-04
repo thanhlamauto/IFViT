@@ -11,7 +11,7 @@ from typing import Dict, Any
 from pathlib import Path
 import copy
 
-from utils import load_checkpoint
+from .utils import load_checkpoint
 
 
 def load_module1_transformer_weights(

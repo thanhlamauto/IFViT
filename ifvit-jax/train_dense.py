@@ -15,8 +15,14 @@ from pathlib import Path
 from config import DENSE_CONFIG
 from models import DenseRegModel
 from losses import total_loss_dense
+import sys
+from pathlib import Path
+# Add root to path for data module
+root_path = Path(__file__).parent.parent
+if str(root_path) not in sys.path:
+    sys.path.insert(0, str(root_path))
 from data import dense_reg_dataset, preprocess_batch
-from utils import (
+from ut.utils import (
     save_checkpoint, load_checkpoint, Logger,
     print_model_summary, count_parameters
 )

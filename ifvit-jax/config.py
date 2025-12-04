@@ -10,13 +10,13 @@ Module 2 (Matcher): Fingerprint matching using L_D, L_E, and L_A losses.
 # ============================================================================
 DENSE_CONFIG = {
     # Image settings
-    "image_size": 128,
+    "image_size": 128,  # Paper: 128x128
     
-    # Training hyperparameters
-    "batch_size": 64,
-    "lr": 3e-4,
-    "num_epochs": 50,
-    "weight_decay": 1e-4,
+    # Training hyperparameters (from paper 2404.08237v1)
+    "batch_size": 128,  # Paper: 128
+    "lr": 1e-3,  # Paper: 1e-3
+    "num_epochs": 100,  # Paper: 100
+    "weight_decay": 2e-4,  # Paper: 2e-4
     
     # Loss weights
     "lambda_D": 1.0,  # Only use L_D for dense registration
@@ -48,20 +48,21 @@ DENSE_CONFIG = {
 # ============================================================================
 MATCH_CONFIG = {
     # Image settings
-    "image_size": 224,
-    "roi_size": 90,  # ROI patch size for local features
+    "image_size": 224,  # Note: Paper doesn't specify, but typically larger for Module 2
+    "roi_size": 90,  # Paper: 90x90 ROIs
     
-    # Training hyperparameters
-    "batch_size": 32,
-    "lr": 1e-4,
-    "num_epochs": 40,
-    "weight_decay": 1e-4,
-    "warmup_epochs": 5,
+    # Training hyperparameters (from paper 2404.08237v1)
+    # Fine-tuning on real fingerprints: 70 epochs, LR=1e-4
+    "batch_size": 128,  # Paper: 128
+    "lr": 1e-4,  # Paper: 1e-4 (fine-tuning), 1e-3 (pre-training on PrintsGAN)
+    "num_epochs": 70,  # Paper: 70 (fine-tuning)
+    "weight_decay": 2e-4,  # Paper: 2e-4
+    "warmup_epochs": 5,  # Not in paper, but common practice
     
-    # Loss weights
-    "lambda_D": 0.5,   # Dense correspondence loss
-    "lambda_E": 0.1,   # Cosine embedding loss
-    "lambda_A": 1.0,   # ArcFace loss
+    # Loss weights (from paper: λ1=0.5, λ2=0.1, λ3=1.0)
+    "lambda_D": 0.5,   # Paper: 0.5
+    "lambda_E": 0.1,   # Paper: 0.1
+    "lambda_A": 1.0,   # Paper: 1.0
     
     # Model architecture
     "backbone": "resnet18",
@@ -76,12 +77,12 @@ MATCH_CONFIG = {
     "use_loftr": True,  # Use LoFTR LocalFeatureTransformer
     "attention_type": "linear",  # 'linear' or 'full'
     
-    # ArcFace settings
-    "arcface_scale": 30.0,  # s parameter
-    "arcface_margin": 0.5,  # m parameter
+    # ArcFace settings (from paper: m=0.4, s=64)
+    "arcface_scale": 64.0,  # Paper: s=64
+    "arcface_margin": 0.4,  # Paper: m=0.4
     
-    # Embedding loss settings
-    "embedding_margin": 0.2,
+    # Embedding loss settings (from paper: margin m=0.4)
+    "embedding_margin": 0.4,  # Paper: m=0.4 (cosine embedding loss)
     
     # Score fusion (for inference)
     "alpha_global": 0.6,
