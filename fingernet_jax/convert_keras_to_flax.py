@@ -23,6 +23,16 @@ def load_keras_model():
     if FINGERNET_SRC_DIR not in sys.path:
         sys.path.append(FINGERNET_SRC_DIR)
 
+    # Kaggle typically has the standalone "keras" package installed (Keras 3),
+    # while the original FingerNet code expects TF1-style "keras" that matches
+    # tf.keras.* APIs. We monkey-patch sys.modules so that any
+    # "import keras" inside train_test_deploy.py actually resolves to tf.keras.
+    import tensorflow as tf  # type: ignore
+    if "keras" in sys.modules:
+        # Drop pre-existing standalone keras if present.
+        del sys.modules["keras"]
+    sys.modules["keras"] = tf.keras
+
     # train_test_deploy.py calls argparse.parse_args() at import time.
     # Provide it with a minimal, valid argv to avoid parsing our script args.
     saved_argv = sys.argv[:]
