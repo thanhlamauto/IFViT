@@ -11,6 +11,7 @@ from .nist_sd300 import NISTSD300Dataset
 from .nist_sd301a import NISTSD301aDataset
 from .nist_sd302a import NISTSD302aDataset
 from .nist_sd4 import NISTSD4Dataset
+from .fpgan import FPGANDataset
 from .pairs import DenseRegPair, MatcherPair
 from .augmentation import random_corrupt_fingerprint, generate_gt_correspondences
 from .loaders import (
@@ -37,6 +38,7 @@ __all__ = [
     'NISTSD301aDataset',
     'NISTSD302aDataset',
     'NISTSD4Dataset',
+    'FPGANDataset',
     # High-level paper splits
     'PaperDatasetRoots',
     'build_paper_train_entries',

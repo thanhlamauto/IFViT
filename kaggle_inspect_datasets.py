@@ -36,6 +36,7 @@ from data import (  # type: ignore
     build_paper_test_entries,
     load_image,
     normalize_image,
+    FPGANDataset,
 )
 
 
@@ -93,6 +94,23 @@ def main():
     print("\nShowing a few sample images from TRAIN and TEST...")
     show_samples(train_entries, n=4, title="TRAIN samples")
     show_samples(test_entries, n=4, title="TEST samples")
+
+    # ------------------------------------------------------------------
+    # Optional: FPGAN pretrain dataset (synthetic)
+    # Default Kaggle path (from user): /kaggle/input/fpgan-original/fpgan
+    # You can override via env: FPGAN_ROOT=/custom/path
+    # ------------------------------------------------------------------
+    fpgan_root = os.environ.get("FPGAN_ROOT", "/kaggle/input/fpgan-original/fpgan")
+    if os.path.isdir(fpgan_root):
+        print(f"\nDetected FPGAN root at: {fpgan_root}")
+        fpgan_ds = FPGANDataset(root_dir=fpgan_root, split="train")
+        fpgan_entries = fpgan_ds.get_all_entries()
+
+        summarize_entries("FPGAN_PRETRAIN", fpgan_entries)
+        print("\nShowing a few sample images from FPGAN (pretrain)...")
+        show_samples(fpgan_entries, n=6, title="FPGAN pretrain samples")
+    else:
+        print(f"\nFPGAN root not found at {fpgan_root} (set FPGAN_ROOT env var to override).")
 
 
 if __name__ == "__main__":
