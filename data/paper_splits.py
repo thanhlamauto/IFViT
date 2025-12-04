@@ -19,6 +19,7 @@ from typing import List
 from .base import FingerprintEntry
 from .fvc2002 import FVC2002Dataset
 from .fvc2004 import FVC2004Dataset
+from .nist_sd300 import NISTSD300Dataset
 from .nist_sd301a import NISTSD301aDataset
 from .nist_sd302a import NISTSD302aDataset
 from .nist_sd4 import NISTSD4Dataset
@@ -56,6 +57,7 @@ def build_paper_train_entries(roots: PaperDatasetRoots) -> List[FingerprintEntry
         - FVC2002 DB1A, DB2A, DB3A  (Db1_a, Db2_a, Db3_a)
         - NIST SD301a               (all devices / captures by default)
         - NIST SD302a               (train split)
+        - NIST SD300                (rolled + plain, optional extra training data)
     """
     datasets = []
 
@@ -70,6 +72,15 @@ def build_paper_train_entries(roots: PaperDatasetRoots) -> List[FingerprintEntry
             split="train",
             # Example: only 500 PPI if you want to be strict
             resolutions=["500"],
+        )
+    )
+
+    # NIST SD300: optional extra training data (rolled + plain)
+    datasets.append(
+        NISTSD300Dataset(
+            root_dir=roots.nist_sd300,
+            split="train",
+            impression_types=None,  # both roll and plain
         )
     )
 
