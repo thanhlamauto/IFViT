@@ -6,6 +6,11 @@ einops>=0.7.0
 tqdm>=4.66
 matplotlib>=3.8
 
+# For FingerNet Keras → Flax conversion (used in fingernet_jax/convert_keras_to_flax.py)
+tensorflow>=2.12
+keras>=2.12
+scipy>=1.11
+
 # JAX / JAXLIB:
 # On Kaggle TPUs, JAX is often preinstalled with a TPU-optimized build.
 # If you install manually on CPU/GPU, uncomment one of the following lines:
