@@ -42,7 +42,7 @@ class PaperDatasetRoots:
     # These should point to the dataset roots that contain the expected subfolders.
     fvc2002: str = "/kaggle/input/fvc2002/FVC2002"
     fvc2004: str = "/kaggle/input/fvc2004/FVC2004"
-    nist_sd300: str = "/kaggle/input/nist-sd300"  # Not used in paper helpers yet
+    nist_sd300: str = "/kaggle/input/nist-sd300/NIST SD300"  # Not used in paper helpers yet
     nist_sd4: str = "/kaggle/input/nist-sd4/NIST4"
     # For SD301a and SD302a, loaders expect root_dir and append `/images/...`
     nist_sd301a: str = "/kaggle/input/sd301a"
