@@ -66,6 +66,12 @@ def load_keras_model():
 
     keras_callbacks.ModelCheckpoint = tf.keras.callbacks.ModelCheckpoint
 
+    # backend: reuse tf.keras.backend and add a .tf attribute pointing to
+    # tf.compat.v1 so that code can access K.tf.ConfigProto, etc.
+    keras_backend = tf.keras.backend
+    if not hasattr(keras_backend, "tf"):
+        keras_backend.tf = tf.compat.v1  # type: ignore[attr-defined]
+
     # Wire submodules
     keras_root.models = keras_models
     keras_root.layers = keras_layers
@@ -73,6 +79,7 @@ def load_keras_model():
     keras_root.optimizers = keras_optimizers
     keras_root.utils = keras_utils
     keras_root.callbacks = keras_callbacks
+    keras_root.backend = keras_backend
 
     keras_layers.core = keras_layers_core
     keras_layers.convolutional = keras_layers_conv
@@ -90,6 +97,7 @@ def load_keras_model():
     sys.modules["keras.optimizers"] = keras_optimizers
     sys.modules["keras.utils"] = keras_utils
     sys.modules["keras.callbacks"] = keras_callbacks
+    sys.modules["keras.backend"] = keras_backend
 
     # train_test_deploy.py calls argparse.parse_args() at import time.
     # Provide it with a minimal, valid argv to avoid parsing our script args.
