@@ -1,0 +1,15 @@
+numpy>=1.24
+opencv-python-headless>=4.8
+flax>=0.8.0
+optax>=0.2.0
+einops>=0.7.0
+tqdm>=4.66
+matplotlib>=3.8
+
+# JAX / JAXLIB:
+# On Kaggle TPUs, JAX is often preinstalled with a TPU-optimized build.
+# If you install manually on CPU/GPU, uncomment one of the following lines:
+# jax[cpu]==0.4.28
+# jaxlib==0.4.28
+
+

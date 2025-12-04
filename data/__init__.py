@@ -11,15 +11,20 @@ from .nist_sd300 import NISTSD300Dataset
 from .nist_sd301a import NISTSD301aDataset
 from .nist_sd302a import NISTSD302aDataset
 from .nist_sd4 import NISTSD4Dataset
-from .printsgan import PrintsGANDataset
 from .pairs import DenseRegPair, MatcherPair
 from .augmentation import random_corrupt_fingerprint, generate_gt_correspondences
 from .loaders import (
-    load_image, normalize_image, 
-    dense_reg_dataset, matcher_dataset, 
-    preprocess_batch, compute_overlap_and_rois
+    load_image, normalize_image,
+    dense_reg_dataset, matcher_dataset,
+    preprocess_batch, compute_overlap_and_rois,
 )
 from .utils import combine_datasets, create_global_finger_id_mapping
+from .paper_splits import (
+    PaperDatasetRoots,
+    build_paper_train_entries,
+    build_paper_val_entries,
+    build_paper_test_entries,
+)
 
 __all__ = [
     # Base classes
@@ -32,7 +37,11 @@ __all__ = [
     'NISTSD301aDataset',
     'NISTSD302aDataset',
     'NISTSD4Dataset',
-    'PrintsGANDataset',
+    # High-level paper splits
+    'PaperDatasetRoots',
+    'build_paper_train_entries',
+    'build_paper_val_entries',
+    'build_paper_test_entries',
     # Pair classes
     'DenseRegPair',
     'MatcherPair',
