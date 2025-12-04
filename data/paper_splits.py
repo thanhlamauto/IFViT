@@ -29,15 +29,23 @@ from .utils import combine_datasets
 class PaperDatasetRoots:
     """
     Root paths for all datasets used in IFViT paper (real datasets only).
-
-    Adjust these paths to match your local folder layout.
+    
+    By default, assumes Kaggle input layout under ``/kaggle/input``.
+    Adjust these paths if your folder layout is different.
     """
-
-    fvc2002: str = "datasets/FVC2002"
-    fvc2004: str = "datasets/FVC2004"
-    nist_sd301a: str = "datasets/NIST_SD301a"
-    nist_sd302a: str = "datasets/NIST_SD302a"
-    nist_sd4: str = "datasets/NIST_SD4"
+    
+    # Base root for Kaggle (you can override when instantiating)
+    base_root: str = "/kaggle/input"
+    
+    # Individual dataset roots (Kaggle paths from the user)
+    # These should point to the dataset roots that contain the expected subfolders.
+    fvc2002: str = "/kaggle/input/fvc2002/FVC2002"
+    fvc2004: str = "/kaggle/input/fvc2004/FVC2004"
+    nist_sd300: str = "/kaggle/input/nist-sd300/NIST SD300"  # Not used in paper helpers yet
+    nist_sd4: str = "/kaggle/input/nist-sd4/NIST4"
+    # For SD301a and SD302a, loaders expect root_dir and append `/images/...`
+    nist_sd301a: str = "/kaggle/input/sd301a"
+    nist_sd302a: str = "/kaggle/input/sd302a"
 
 
 def build_paper_train_entries(roots: PaperDatasetRoots) -> List[FingerprintEntry]:
