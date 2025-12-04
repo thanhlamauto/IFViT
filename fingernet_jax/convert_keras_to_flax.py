@@ -23,6 +23,74 @@ def load_keras_model():
     if FINGERNET_SRC_DIR not in sys.path:
         sys.path.append(FINGERNET_SRC_DIR)
 
+    # ------------------------------------------------------------------
+    # Provide a minimal "keras" compatibility layer backed by tf.keras,
+    # so that old-style imports in train_test_deploy.py work on Kaggle.
+    # ------------------------------------------------------------------
+    import types
+    import tensorflow as tf  # type: ignore
+
+    keras_root = types.ModuleType("keras")
+    keras_models = types.ModuleType("keras.models")
+    keras_layers = types.ModuleType("keras.layers")
+    keras_layers_core = types.ModuleType("keras.layers.core")
+    keras_layers_conv = types.ModuleType("keras.layers.convolutional")
+    keras_layers_norm = types.ModuleType("keras.layers.normalization")
+    keras_layers_adv = types.ModuleType("keras.layers.advanced_activations")
+    keras_regularizers = types.ModuleType("keras.regularizers")
+    keras_optimizers = types.ModuleType("keras.optimizers")
+    keras_utils = types.ModuleType("keras.utils")
+    keras_callbacks = types.ModuleType("keras.callbacks")
+
+    # Map classes / functions actually used in train_test_deploy.py
+    keras_models.Model = tf.keras.Model
+
+    keras_layers.Input = tf.keras.layers.Input
+    keras_layers_core.Flatten = tf.keras.layers.Flatten
+    keras_layers_core.Activation = tf.keras.layers.Activation
+    keras_layers_core.Lambda = tf.keras.layers.Lambda
+
+    keras_layers_conv.Conv2D = tf.keras.layers.Conv2D
+    keras_layers_conv.MaxPooling2D = tf.keras.layers.MaxPooling2D
+    keras_layers_conv.UpSampling2D = tf.keras.layers.UpSampling2D
+
+    keras_layers_norm.BatchNormalization = tf.keras.layers.BatchNormalization
+    keras_layers_adv.PReLU = tf.keras.layers.PReLU
+
+    keras_regularizers.l2 = tf.keras.regularizers.l2
+
+    keras_optimizers.SGD = tf.keras.optimizers.SGD
+    keras_optimizers.Adam = tf.keras.optimizers.Adam
+
+    keras_utils.plot_model = tf.keras.utils.plot_model
+
+    keras_callbacks.ModelCheckpoint = tf.keras.callbacks.ModelCheckpoint
+
+    # Wire submodules
+    keras_root.models = keras_models
+    keras_root.layers = keras_layers
+    keras_root.regularizers = keras_regularizers
+    keras_root.optimizers = keras_optimizers
+    keras_root.utils = keras_utils
+    keras_root.callbacks = keras_callbacks
+
+    keras_layers.core = keras_layers_core
+    keras_layers.convolutional = keras_layers_conv
+    keras_layers.normalization = keras_layers_norm
+    keras_layers.advanced_activations = keras_layers_adv
+
+    sys.modules["keras"] = keras_root
+    sys.modules["keras.models"] = keras_models
+    sys.modules["keras.layers"] = keras_layers
+    sys.modules["keras.layers.core"] = keras_layers_core
+    sys.modules["keras.layers.convolutional"] = keras_layers_conv
+    sys.modules["keras.layers.normalization"] = keras_layers_norm
+    sys.modules["keras.layers.advanced_activations"] = keras_layers_adv
+    sys.modules["keras.regularizers"] = keras_regularizers
+    sys.modules["keras.optimizers"] = keras_optimizers
+    sys.modules["keras.utils"] = keras_utils
+    sys.modules["keras.callbacks"] = keras_callbacks
+
     # train_test_deploy.py calls argparse.parse_args() at import time.
     # Provide it with a minimal, valid argv to avoid parsing our script args.
     saved_argv = sys.argv[:]
