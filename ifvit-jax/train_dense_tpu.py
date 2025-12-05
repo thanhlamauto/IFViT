@@ -20,6 +20,15 @@ from typing import Dict, Tuple
 import argparse
 from pathlib import Path
 import numpy as np
+import os
+
+# WandB integration
+try:
+    import wandb
+    WANDB_AVAILABLE = True
+except ImportError:
+    WANDB_AVAILABLE = False
+    print("⚠ wandb not available. Install with: pip install wandb")
 
 from config import DENSE_CONFIG
 from models import DenseRegModel
@@ -343,6 +352,36 @@ def train_dense_reg_tpu(
     logger.log(f"TPU devices: {num_devices}")
     logger.log(f"Effective batch size: {effective_batch_size}")
     
+    # Initialize WandB
+    wandb_initialized = False
+    if WANDB_AVAILABLE:
+        try:
+            # Check if WANDB_API_KEY is set (from Kaggle secrets)
+            api_key = os.environ.get("WANDB_API_KEY")
+            if api_key:
+                wandb.login(key=api_key)
+            
+            # Initialize wandb run
+            wandb.init(
+                project="ifvit-dense-registration",
+                name=f"dense_reg_tpu_epochs{config['num_epochs']}_bs{effective_batch_size}",
+                config={
+                    **config,
+                    'num_devices': num_devices,
+                    'effective_batch_size': effective_batch_size,
+                    'device_type': 'TPU',
+                },
+                tags=["dense_registration", "tpu", "module1"],
+                reinit=True  # Allow reinit if running in notebook
+            )
+            wandb_initialized = True
+            logger.log("✓ WandB initialized successfully")
+        except Exception as e:
+            logger.log(f"⚠ Failed to initialize WandB: {e}")
+            wandb_initialized = False
+    else:
+        logger.log("⚠ WandB not available, skipping wandb logging")
+    
     # Initialize RNG
     rng = jax.random.PRNGKey(42)
     rng, init_rng = jax.random.split(rng)
@@ -498,6 +537,13 @@ def train_dense_reg_tpu(
                 if global_step % config["log_every"] == 0:
                     log_metrics = {k: float(v) for k, v in metrics.items()}
                     logger.log_metrics(global_step, log_metrics, prefix="[Train] ")
+                    
+                    # Log to WandB
+                    if wandb_initialized:
+                        wandb_log = {f"train/{k}": float(v) for k, v in metrics.items()}
+                        wandb_log['train/step'] = global_step
+                        wandb_log['train/epoch'] = epoch + 1
+                        wandb.log(wandb_log, step=global_step)
                 
                 # RNG already updated at start of loop (rng, step_key = jax.random.split(rng))
             
@@ -507,6 +553,12 @@ def train_dense_reg_tpu(
                 for k, v in epoch_metrics.items()
             }
             logger.log_epoch(epoch + 1, avg_metrics)
+            
+            # Log epoch metrics to WandB
+            if wandb_initialized:
+                wandb_epoch_log = {f"epoch/{k}": float(v) for k, v in avg_metrics.items()}
+                wandb_epoch_log['epoch/epoch'] = epoch + 1
+                wandb.log(wandb_epoch_log, step=global_step)
             
         except Exception as e:
             logger.log(f"⚠ Error: {e}")
@@ -536,6 +588,14 @@ def train_dense_reg_tpu(
                 }
             )
             logger.log(f"✓ Saved checkpoint: {checkpoint_path}")
+            
+            # Log checkpoint save to WandB
+            if wandb_initialized:
+                wandb.log({
+                    'checkpoint/saved': True,
+                    'checkpoint/epoch': epoch + 1,
+                    'checkpoint/path': str(checkpoint_path)
+                }, step=global_step)
     
     # Save final checkpoint
     unreplicated_state = jax_utils.unreplicate(state)
@@ -559,6 +619,11 @@ def train_dense_reg_tpu(
     logger.log("\n" + "="*60)
     logger.log("Training complete!")
     logger.log("="*60)
+    
+    # Finish WandB run
+    if wandb_initialized:
+        wandb.finish()
+        logger.log("✓ WandB run completed")
 
 
 # ============================================================================

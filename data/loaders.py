@@ -9,26 +9,48 @@ from typing import Tuple, List, Dict, Iterator, Optional
 from pathlib import Path
 import cv2
 import random
+import warnings
+
+try:
+    from PIL import Image
+    PIL_AVAILABLE = True
+except ImportError:
+    PIL_AVAILABLE = False
 
 from .base import FingerprintEntry
 from .augmentation import random_corrupt_fingerprint, generate_gt_correspondences
 from .pairs import _generate_pairs
 
 
-def load_image(path: str) -> np.ndarray:
+def load_image(path: str) -> Optional[np.ndarray]:
     """
-    Load a fingerprint image from path.
+    Load a fingerprint image from path with fallback for corrupt files.
     
     Args:
         path: Path to image file
         
     Returns:
-        Image as numpy array (H, W) float32 in range [0, 255]
+        Image as numpy array (H, W) float32 in range [0, 255], or None if failed
+        
+    Note:
+        Returns None instead of raising to allow graceful handling of corrupt files.
     """
+    # Try OpenCV first (faster)
     img = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
-    if img is None:
-        raise ValueError(f"Failed to load image: {path}")
-    return img.astype(np.float32)
+    if img is not None:
+        return img.astype(np.float32)
+    
+    # Fallback to PIL if OpenCV fails (handles some corrupt PNGs better)
+    if PIL_AVAILABLE:
+        try:
+            img = np.array(Image.open(str(path)).convert('L'), dtype=np.float32)
+            if img.size > 0:
+                return img
+        except Exception as e:
+            warnings.warn(f"Failed to load image with PIL: {path} - {e}")
+    
+    # Both methods failed
+    return None
 
 
 def normalize_image(img: np.ndarray, target_size: Optional[Tuple[int, int]] = None) -> np.ndarray:
@@ -154,41 +176,55 @@ def dense_reg_dataset(
         rng = jax.random.PRNGKey(42 + i // batch_size)
         
         for entry1, entry2, is_genuine in batch_pairs:
-            # Load first image
-            img1 = load_image(entry1.path)
-            img1 = normalize_image(img1, target_size=(image_size, image_size))
-            
-            if is_genuine:
-                # Genuine pair: original ↔ corrupted (same finger)
-                rng, corrupt_rng = jax.random.split(rng)
-                corrupted, transform = random_corrupt_fingerprint(
-                        (img1 * 255).astype(np.float32), 
-                    corrupt_rng
-                )
-                corrupted = corrupted / 255.0
+            try:
+                # Load first image
+                img1 = load_image(entry1.path)
+                if img1 is None:
+                    warnings.warn(f"Skipping corrupt image: {entry1.path}")
+                    continue
+                img1 = normalize_image(img1, target_size=(image_size, image_size))
                 
-                # Generate GT correspondences
-                matches, valid = generate_gt_correspondences(
-                        img1, corrupted, transform, num_points=num_points
-                )
-                
-                batch_img1.append(img1[..., None])
-                batch_img2.append(corrupted[..., None])
-                batch_matches.append(matches)
-                batch_valid.append(valid)
-            else:
-                # Imposter pair: different fingers (GT "no match")
-                img2 = load_image(entry2.path)
-                img2 = normalize_image(img2, target_size=(image_size, image_size))
-                
-                # No valid correspondences (all zeros, all invalid)
-                matches = np.zeros((num_points, 4), dtype=np.float32)
-                valid = np.zeros(num_points, dtype=bool)
-                
-                batch_img1.append(img1[..., None])
-                batch_img2.append(img2[..., None])
-                batch_matches.append(matches)
-                batch_valid.append(valid)
+                if is_genuine:
+                    # Genuine pair: original ↔ corrupted (same finger)
+                    rng, corrupt_rng = jax.random.split(rng)
+                    corrupted, transform = random_corrupt_fingerprint(
+                            (img1 * 255).astype(np.float32), 
+                        corrupt_rng
+                    )
+                    corrupted = corrupted / 255.0
+                    
+                    # Generate GT correspondences
+                    matches, valid = generate_gt_correspondences(
+                            img1, corrupted, transform, num_points=num_points
+                    )
+                    
+                    batch_img1.append(img1[..., None])
+                    batch_img2.append(corrupted[..., None])
+                    batch_matches.append(matches)
+                    batch_valid.append(valid)
+                else:
+                    # Imposter pair: different fingers (GT "no match")
+                    img2 = load_image(entry2.path)
+                    if img2 is None:
+                        warnings.warn(f"Skipping corrupt image: {entry2.path}")
+                        continue
+                    img2 = normalize_image(img2, target_size=(image_size, image_size))
+                    
+                    # No valid correspondences (all zeros, all invalid)
+                    matches = np.zeros((num_points, 4), dtype=np.float32)
+                    valid = np.zeros(num_points, dtype=bool)
+                    
+                    batch_img1.append(img1[..., None])
+                    batch_img2.append(img2[..., None])
+                    batch_matches.append(matches)
+                    batch_valid.append(valid)
+            except Exception as e:
+                warnings.warn(f"Skipping pair due to error: {entry1.path} / {entry2.path} - {e}")
+                continue
+        
+        # Skip empty batches (all pairs failed to load)
+        if len(batch_img1) == 0:
+            continue
         
         # Pad to same length
         max_matches = max(len(m) for m in batch_matches)
@@ -265,47 +301,61 @@ def matcher_dataset(
         batch_class2 = []
         
         for entry1, entry2, is_genuine in batch_pairs:
-            if preprocessed_dir:
-                # Load from preprocessed .npz
-                pair_idx = hash((entry1.path, entry2.path)) % 1000000
-                npz_path = Path(preprocessed_dir) / f"pair_{pair_idx:06d}.npz"
-                
-                if npz_path.exists():
-                    data = np.load(npz_path)
-                    batch_global1.append(data['global1'])
-                    batch_global2.append(data['global2'])
-                    batch_roi1.append(data['roi1'])
-                    batch_roi2.append(data['roi2'])
+            try:
+                if preprocessed_dir:
+                    # Load from preprocessed .npz
+                    pair_idx = hash((entry1.path, entry2.path)) % 1000000
+                    npz_path = Path(preprocessed_dir) / f"pair_{pair_idx:06d}.npz"
+                    
+                    if npz_path.exists():
+                        data = np.load(npz_path)
+                        batch_global1.append(data['global1'])
+                        batch_global2.append(data['global2'])
+                        batch_roi1.append(data['roi1'])
+                        batch_roi2.append(data['roi2'])
+                    else:
+                        # Fallback to loading raw images
+                        img1 = load_image(entry1.path)
+                        img2 = load_image(entry2.path)
+                        if img1 is None or img2 is None:
+                            warnings.warn(f"Skipping corrupt image pair: {entry1.path} / {entry2.path}")
+                            continue
+                        img1 = normalize_image(img1, target_size=(image_size, image_size))
+                        img2 = normalize_image(img2, target_size=(image_size, image_size))
+                        batch_img1.append(img1[..., None])
+                        batch_img2.append(img2[..., None])
+                        # Placeholder ROIs
+                        batch_roi1.append(np.zeros((roi_size, roi_size, 1), dtype=np.float32))
+                        batch_roi2.append(np.zeros((roi_size, roi_size, 1), dtype=np.float32))
+                        batch_global1.append(img1[..., None])
+                        batch_global2.append(img2[..., None])
                 else:
-                    # Fallback to loading raw images
+                    # Load raw images (will need FingerNet processing in training loop)
                     img1 = load_image(entry1.path)
                     img2 = load_image(entry2.path)
+                    if img1 is None or img2 is None:
+                        warnings.warn(f"Skipping corrupt image pair: {entry1.path} / {entry2.path}")
+                        continue
                     img1 = normalize_image(img1, target_size=(image_size, image_size))
                     img2 = normalize_image(img2, target_size=(image_size, image_size))
                     batch_img1.append(img1[..., None])
                     batch_img2.append(img2[..., None])
-                    # Placeholder ROIs
+                    # Placeholder - will be filled by FingerNet + ROI extraction
                     batch_roi1.append(np.zeros((roi_size, roi_size, 1), dtype=np.float32))
                     batch_roi2.append(np.zeros((roi_size, roi_size, 1), dtype=np.float32))
                     batch_global1.append(img1[..., None])
                     batch_global2.append(img2[..., None])
-            else:
-                # Load raw images (will need FingerNet processing in training loop)
-                img1 = load_image(entry1.path)
-                img2 = load_image(entry2.path)
-                img1 = normalize_image(img1, target_size=(image_size, image_size))
-                img2 = normalize_image(img2, target_size=(image_size, image_size))
-                batch_img1.append(img1[..., None])
-                batch_img2.append(img2[..., None])
-                # Placeholder - will be filled by FingerNet + ROI extraction
-                batch_roi1.append(np.zeros((roi_size, roi_size, 1), dtype=np.float32))
-                batch_roi2.append(np.zeros((roi_size, roi_size, 1), dtype=np.float32))
-                batch_global1.append(img1[..., None])
-                batch_global2.append(img2[..., None])
-            
-            batch_labels.append(1 if is_genuine else -1)
-            batch_class1.append(entry1.finger_global_id)
-            batch_class2.append(entry2.finger_global_id)
+                
+                batch_labels.append(1 if is_genuine else -1)
+                batch_class1.append(entry1.finger_global_id)
+                batch_class2.append(entry2.finger_global_id)
+            except Exception as e:
+                warnings.warn(f"Skipping pair due to error: {entry1.path} / {entry2.path} - {e}")
+                continue
+        
+        # Skip empty batches (all pairs failed to load)
+        if len(batch_labels) == 0:
+            continue
         
         yield {
             'img1': jnp.array(np.stack(batch_img1)) if batch_img1 else None,
