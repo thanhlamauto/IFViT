@@ -99,6 +99,7 @@ def create_train_state(config: Dict, rng: jax.random.PRNGKey) -> TrainState:
     pos_encoding = variables.get('pos_encoding', {})
     
     # Ensure batch_stats and pos_encoding are not None or empty
+    # Note: pos_encoding uses self.variable() which requires a forward pass to initialize
     if batch_stats is None or len(batch_stats) == 0 or \
        pos_encoding is None or len(pos_encoding) == 0:
         # If collections are empty, initialize them by running a forward pass
@@ -110,8 +111,16 @@ def create_train_state(config: Dict, rng: jax.random.PRNGKey) -> TrainState:
             train=True,
             mutable=['batch_stats', 'pos_encoding']
         )
+        # Extract updated collections
         batch_stats = updated_vars.get('batch_stats', {})
         pos_encoding = updated_vars.get('pos_encoding', {})
+        
+        # If still empty, try to get from variables after apply
+        if not batch_stats:
+            batch_stats = {}
+        if not pos_encoding:
+            # pos_encoding might be created during apply, check again
+            pos_encoding = {}
     
     # Load LoFTR pretrained weights if specified
     loftr_ckpt = config.get("loftr_pretrained_ckpt")
@@ -363,24 +372,31 @@ def train_dense_reg_tpu(
         raise
     
     # Ensure batch_stats and pos_encoding are not None or empty before replicating
+    # Run a forward pass to ensure pos_encoding is initialized (it uses self.variable())
     if state.batch_stats is None or len(state.batch_stats) == 0 or \
        state.pos_encoding is None or len(state.pos_encoding) == 0:
         # Initialize collections if they're None or empty
         dummy_img = jnp.zeros((1, config["image_size"], config["image_size"], 1))
+        variables = {
+            'params': state.params,
+            'batch_stats': state.batch_stats if state.batch_stats else {},
+            'pos_encoding': state.pos_encoding if state.pos_encoding else {}
+        }
         _, updated_vars = state.apply_fn(
-            {
-                'params': state.params,
-                'batch_stats': state.batch_stats if state.batch_stats else {},
-                'pos_encoding': state.pos_encoding if state.pos_encoding else {}
-            },
+            variables,
             dummy_img,
             dummy_img,
             train=True,
             mutable=['batch_stats', 'pos_encoding']
         )
+        # Extract nested collections correctly
+        updated_batch_stats = updated_vars.get('batch_stats', {})
+        updated_pos_encoding = updated_vars.get('pos_encoding', {})
+        
+        # Update state with initialized collections
         state = state.replace(
-            batch_stats=updated_vars.get('batch_stats', {}).get('batch_stats', state.batch_stats),
-            pos_encoding=updated_vars.get('pos_encoding', {}).get('pos_encoding', state.pos_encoding)
+            batch_stats=updated_batch_stats if updated_batch_stats else state.batch_stats,
+            pos_encoding=updated_pos_encoding if updated_pos_encoding else state.pos_encoding
         )
     
     # Replicate state across devices
