@@ -232,9 +232,10 @@ def train_step_fn(
         
         # Get feature map shape from feat1 (H, W) for loss computation
         # feat1 shape: (B, H, W, C) -> feature_shape = (H, W)
-        # Use jnp.array to avoid concretization errors with tracers
-        H_feat = jnp.array(feat1.shape[1], dtype=jnp.int32)
-        W_feat = jnp.array(feat1.shape[2], dtype=jnp.int32)
+        # Shape attributes are concrete Python ints, safe to use directly
+        # For 128x128 input with ResNet-18: H=W=8 (16x downsampling)
+        H_feat = int(feat1.shape[1])  # Concrete value from shape
+        W_feat = int(feat1.shape[2])  # Concrete value from shape
         feature_shape = (H_feat, W_feat)  # (8, 8) for 128x128 input
         
         # Compute loss

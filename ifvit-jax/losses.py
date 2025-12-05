@@ -55,13 +55,11 @@ def dense_reg_loss(
             sqrt_N = jnp.sqrt(N_array)
             H = W = sqrt_N.astype(jnp.int32)
         else:
-            # Convert to JAX arrays if they're not already
-            if isinstance(feature_shape, (tuple, list)):
-                H = jnp.array(feature_shape[0], dtype=jnp.int32)
-                W = jnp.array(feature_shape[1], dtype=jnp.int32)
-            else:
-                # Already JAX arrays or single value
-                H, W = feature_shape
+            # feature_shape is a tuple of Python ints (from shape attributes)
+            # Convert to JAX arrays for use in JAX operations
+            H_val, W_val = feature_shape
+            H = jnp.array(H_val, dtype=jnp.int32)
+            W = jnp.array(W_val, dtype=jnp.int32)
         
         # Extract coordinates
         x1 = gt_matches[..., 0]  # (B, K)
