@@ -92,17 +92,18 @@ def dense_reg_loss(
         batch_indices = jnp.arange(B)[:, None]  # (B, 1)
         probs = P[batch_indices, idx1, idx2]  # (B, K)
         
-        # Apply valid mask if provided
+        # Negative log likelihood with masking
         if valid_mask is not None:
-            probs = probs * valid_mask
-            num_valid = jnp.sum(valid_mask, axis=1, keepdims=True) + 1e-8
+            # Mask invalid matches BEFORE reduction to avoid blowing up when all invalid
+            mask = valid_mask.astype(jnp.float32)
+            logp = -jnp.log(jnp.clip(probs, 1e-8, 1.0)) * mask  # (B, K)
+            num_valid = jnp.maximum(jnp.sum(mask, axis=1, keepdims=True), 1.0)
+            loss = jnp.sum(logp, axis=1) / num_valid  # (B,)
+            loss = jnp.mean(loss)
         else:
-            num_valid = gt_matches.shape[1]
-        
-        # Negative log likelihood
-        loss = -jnp.log(probs + 1e-8)
-        loss = jnp.sum(loss, axis=1) / num_valid
-        loss = jnp.mean(loss)
+            # No mask: average over all K matches
+            logp = -jnp.log(jnp.clip(probs, 1e-8, 1.0))
+            loss = jnp.mean(logp)
         
     else:
         # gt_matches is already a probability matrix (B, N, M)
