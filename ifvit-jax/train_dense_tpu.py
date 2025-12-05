@@ -232,11 +232,10 @@ def train_step_fn(
         
         # Get feature map shape from feat1 (H, W) for loss computation
         # feat1 shape: (B, H, W, C) -> feature_shape = (H, W)
-        # Shape attributes are concrete Python ints, safe to use directly
-        # For 128x128 input with ResNet-18: H=W=8 (16x downsampling)
-        H_feat = int(feat1.shape[1])  # Concrete value from shape
-        W_feat = int(feat1.shape[2])  # Concrete value from shape
-        feature_shape = (H_feat, W_feat)  # (8, 8) for 128x128 input
+        # shape[] attributes in JAX are Python ints (concrete), safe to use directly
+        H_feat = feat1.shape[1]
+        W_feat = feat1.shape[2]
+        feature_shape = (H_feat, W_feat)  # e.g., (8, 8) for 128x128 input
         
         # Compute loss
         losses = total_loss_dense(
@@ -500,8 +499,7 @@ def train_dense_reg_tpu(
                     log_metrics = {k: float(v) for k, v in metrics.items()}
                     logger.log_metrics(global_step, log_metrics, prefix="[Train] ")
                 
-                # Update RNG
-                rng, _ = jax.random.split(rng)
+                # RNG already updated at start of loop (rng, step_key = jax.random.split(rng))
             
             # Epoch summary
             avg_metrics = {
