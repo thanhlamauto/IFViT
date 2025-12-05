@@ -90,10 +90,24 @@ def create_train_state(config: Dict, rng: jax.random.PRNGKey) -> TrainState:
     dummy_img = jnp.zeros((1, config["image_size"], config["image_size"], 1))
     
     # Initialize parameters
+    # Use train=True to ensure batch_stats is created
     rng, init_rng = jax.random.split(rng)
-    variables = model.init(init_rng, dummy_img, dummy_img, train=False)
+    variables = model.init(init_rng, dummy_img, dummy_img, train=True)
     params = variables['params']
     batch_stats = variables.get('batch_stats', {})
+    
+    # Ensure batch_stats is not None or empty
+    if batch_stats is None or len(batch_stats) == 0:
+        # If batch_stats is empty, initialize it by running a forward pass
+        # This will create the batch_stats collection
+        _, batch_stats = model.apply(
+            variables,
+            dummy_img,
+            dummy_img,
+            train=True,
+            mutable=['batch_stats']
+        )
+        batch_stats = batch_stats['batch_stats']
     
     # Load LoFTR pretrained weights if specified
     loftr_ckpt = config.get("loftr_pretrained_ckpt")
@@ -182,7 +196,9 @@ def train_step_fn(
     
     def loss_fn(params):
         # Forward pass with batch_stats
-        variables = {'params': params, 'batch_stats': state.batch_stats}
+        # Ensure batch_stats is not None
+        batch_stats_dict = state.batch_stats if state.batch_stats is not None else {}
+        variables = {'params': params, 'batch_stats': batch_stats_dict}
         outputs, updated_variables = state.apply_fn(
             variables,
             img1,
@@ -192,7 +208,7 @@ def train_step_fn(
             mutable=['batch_stats']
         )
         P, matches_out, feat1, feat2 = outputs
-        updated_batch_stats = updated_variables['batch_stats']
+        updated_batch_stats = updated_variables.get('batch_stats', {})
         
         # Compute loss
         losses = total_loss_dense(
@@ -330,6 +346,19 @@ def train_dense_reg_tpu(
     except Exception as e:
         logger.log(f"⚠ Error loading datasets: {e}")
         raise
+    
+    # Ensure batch_stats is not None or empty before replicating
+    if state.batch_stats is None or len(state.batch_stats) == 0:
+        # Initialize batch_stats if it's None or empty
+        dummy_img = jnp.zeros((1, config["image_size"], config["image_size"], 1))
+        _, batch_stats = state.apply_fn(
+            {'params': state.params, 'batch_stats': {}},
+            dummy_img,
+            dummy_img,
+            train=True,
+            mutable=['batch_stats']
+        )
+        state = state.replace(batch_stats=batch_stats['batch_stats'])
     
     # Replicate state across devices
     state = jax_utils.replicate(state)
