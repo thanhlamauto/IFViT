@@ -9,9 +9,9 @@ from flax.core import freeze, unfreeze
 from flax.serialization import to_state_dict
 
 
-FINGERNET_SRC_DIR = "/kaggle/working/IFViT/FingerNet/src"
-KERAS_WEIGHTS_PATH = "/kaggle/working/IFViT/IFViT/FingerNet/models/released_version/Model.model"
-OUTPUT_NPZ_PATH = "/kaggle/working/IFViT/IFViT/fingernet_jax/fingernet_flax_params.npz"
+FINGERNET_SRC_DIR = "/Users/nguyenthanhlam/SSL_Correspondence/IFViT/FingerNet/src"
+KERAS_WEIGHTS_PATH = "/Users/nguyenthanhlam/SSL_Correspondence/IFViT/FingerNet/models/released_version/Model.model"
+OUTPUT_NPZ_PATH = "/Users/nguyenthanhlam/SSL_Correspondence/IFViT/fingernet_jax/fingernet_flax_params.npz"
 
 
 def load_keras_model():
@@ -22,6 +22,43 @@ def load_keras_model():
     # Ensure we can import train_test_deploy and its local utils
     if FINGERNET_SRC_DIR not in sys.path:
         sys.path.append(FINGERNET_SRC_DIR)
+
+    # ------------------------------------------------------------------
+    # Pre-import FingerNet's utils.py and override copy_file to a no-op
+    # so that the side-effect in train_test_deploy.py:
+    #   copy_file(sys.path[0]+'/'+sys.argv[0], output_dir+'/')
+    # does not crash when run from this script.
+    # ------------------------------------------------------------------
+    import importlib.util
+    utils_path = os.path.join(FINGERNET_SRC_DIR, "utils.py")
+    spec = importlib.util.spec_from_file_location("utils", utils_path)
+    if spec and spec.loader:
+        utils_mod = importlib.util.module_from_spec(spec)
+        sys.modules["utils"] = utils_mod
+        spec.loader.exec_module(utils_mod)
+
+        # Override copy_file to no-op (avoid copying our script file).
+        def _noop_copy_file(path_s, path_t):
+            return None
+        utils_mod.copy_file = _noop_copy_file  # type: ignore[attr-defined]
+
+        # Override gabor_bank with a Python 3–safe version (int division).
+        def _gabor_bank_py3(stride=2, Lambda=8):
+            import numpy as _np
+            from utils import gabor_fn as _gabor_fn  # type: ignore[attr-defined]
+            num_k = int(180 / stride)
+            filters_cos = _np.ones([25, 25, num_k], dtype=float)
+            filters_sin = _np.ones([25, 25, num_k], dtype=float)
+            for n, i in enumerate(range(-90, 90, stride)):
+                theta = i * _np.pi / 180.0
+                kernel_cos, kernel_sin = _gabor_fn((24, 24), 4.5, -theta, Lambda, 0, 0.5)
+                filters_cos[..., n] = kernel_cos
+                filters_sin[..., n] = kernel_sin
+            filters_cos = _np.reshape(filters_cos, [25, 25, 1, -1])
+            filters_sin = _np.reshape(filters_sin, [25, 25, 1, -1])
+            return filters_cos, filters_sin
+
+        utils_mod.gabor_bank = _gabor_bank_py3  # type: ignore[attr-defined]
 
     # ------------------------------------------------------------------
     # Provide a minimal "keras" compatibility layer backed by tf.keras,
@@ -48,9 +85,31 @@ def load_keras_model():
     keras_layers.Input = tf.keras.layers.Input
     keras_layers_core.Flatten = tf.keras.layers.Flatten
     keras_layers_core.Activation = tf.keras.layers.Activation
-    keras_layers_core.Lambda = tf.keras.layers.Lambda
 
-    keras_layers_conv.Conv2D = tf.keras.layers.Conv2D
+    # Legacy Lambda that assumes output shape == first input shape when
+    # Keras 3 cannot infer it (for old TF1-style code using Lambda).
+    class LegacyLambda(tf.keras.layers.Lambda):  # type: ignore[misc]
+        def compute_output_shape(self, input_shape):
+            # For our use-case (only building graph to load weights), we can
+            # safely return a generic 4D shape; Keras only requires a valid
+            # TensorShape/tuple here, not the exact dimensions.
+            return tf.TensorShape([None, None, None, 1])
+
+    keras_layers_core.Lambda = LegacyLambda
+
+    # Legacy Conv2D that accepts a `weights` kwarg like old Keras, and
+    # applies those weights after building the layer.
+    class LegacyConv2D(tf.keras.layers.Conv2D):  # type: ignore[misc]
+        def __init__(self, *args, **kwargs):
+            self._initial_weights = kwargs.pop("weights", None)
+            super().__init__(*args, **kwargs)
+
+        def build(self, input_shape):
+            super().build(input_shape)
+            if self._initial_weights is not None:
+                self.set_weights(self._initial_weights)
+
+    keras_layers_conv.Conv2D = LegacyConv2D
     keras_layers_conv.MaxPooling2D = tf.keras.layers.MaxPooling2D
     keras_layers_conv.UpSampling2D = tf.keras.layers.UpSampling2D
 
@@ -66,11 +125,16 @@ def load_keras_model():
 
     keras_callbacks.ModelCheckpoint = tf.keras.callbacks.ModelCheckpoint
 
-    # backend: reuse tf.keras.backend and add a .tf attribute pointing to
-    # tf.compat.v1 so that code can access K.tf.ConfigProto, etc.
+    # backend: reuse tf.keras.backend and add:
+    #   - .tf attribute pointing to tf.compat.v1 so K.tf.ConfigProto works
+    #   - .set_session as a no-op so K.set_session(sess) does not crash.
     keras_backend = tf.keras.backend
     if not hasattr(keras_backend, "tf"):
         keras_backend.tf = tf.compat.v1  # type: ignore[attr-defined]
+    if not hasattr(keras_backend, "set_session"):
+        def _noop_set_session(sess):
+            return None
+        keras_backend.set_session = _noop_set_session  # type: ignore[attr-defined]
 
     # Wire submodules
     keras_root.models = keras_models
@@ -102,10 +166,15 @@ def load_keras_model():
     # train_test_deploy.py calls argparse.parse_args() at import time.
     # Provide it with a minimal, valid argv to avoid parsing our script args.
     saved_argv = sys.argv[:]
+    saved_cwd = os.getcwd()
     sys.argv = ["train_test_deploy.py", "0", "deploy"]
+    # Change working directory so that train_test_deploy.py sees itself
+    # under FINGERNET_SRC_DIR and its copy_file() side-effect works.
+    os.chdir(FINGERNET_SRC_DIR)
     try:
         import train_test_deploy as ttd  # type: ignore
     finally:
+        os.chdir(saved_cwd)
         sys.argv = saved_argv
 
     # Build the Keras model and load weights explicitly from the absolute path.

@@ -99,19 +99,30 @@ def upsample_nn(x, scale=(8, 8)):
 
 
 def ori_highest_peak_jax(y_pred, length=180):
+    """
+    Compute orientation highest peak using Gaussian smoothing.
+    
+    Args:
+        y_pred: (B, H, W, 90) orientation distribution
+        
+    Returns:
+        (B, H, W, 90) smoothed orientation distribution
+    """
     from utils_jax import gausslabel
-    glabel = gausslabel(length=length, stride=2).astype(jnp.float32)  # (1,1,90,1)
-    glabel = jnp.transpose(glabel, (0, 1, 3, 2))  # -> (1,1,1,90) but conv_general_dilated expects HWIO
-    glabel = glabel.reshape((1, 1, 1, glabel.shape[-1]))  # H=1,W=1
-    # conv along orientation channel
-    # Trick: dùng conv depthwise 1x1
-    return jax.lax.conv_general_dilated(
-        y_pred,
-        glabel,  # (1,1,1,90)
-        window_strides=(1, 1),
-        padding='SAME',
-        dimension_numbers=('NHWC', 'HWIO', 'NHWC')
-    )
+    # gausslabel returns (1, 1, 90, 90) - Gaussian kernel for each orientation
+    # We need to apply it along the last dimension (orientation channel)
+    glabel = gausslabel(length=length, stride=2).astype(jnp.float32)  # (1, 1, 90, 90)
+    
+    # For each spatial position, we want to convolve the 90-dim orientation vector
+    # with the Gaussian kernel. This is equivalent to matrix multiplication.
+    # y_pred: (B, H, W, 90), glabel: (1, 1, 90, 90)
+    # Result: (B, H, W, 90) where each position is smoothed
+    B, H, W, C = y_pred.shape
+    y_pred_flat = y_pred.reshape(B * H * W, C)  # (B*H*W, 90)
+    glabel_flat = glabel.reshape(90, 90)  # (90, 90)
+    result_flat = jnp.dot(y_pred_flat, glabel_flat)  # (B*H*W, 90)
+    result = result_flat.reshape(B, H, W, C)  # (B, H, W, 90)
+    return result
 
 
 class FingerNet(nn.Module):
