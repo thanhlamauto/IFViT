@@ -26,7 +26,7 @@ def generate_perlin_noise(shape: Tuple[int, int], scale: float = 10.0, rng_key: 
         rng_key: JAX random key
         
     Returns:
-        Noise array (H, W) in range [-1, 1]
+        Noise array (H, W) in range [-1, 1] as numpy array
     """
     H, W = shape
     noise = np.zeros((H, W), dtype=np.float32)
@@ -38,6 +38,8 @@ def generate_perlin_noise(shape: Tuple[int, int], scale: float = 10.0, rng_key: 
         if rng_key is not None:
             rng_key, subkey = jax.random.split(rng_key)
             octave_noise = jax.random.normal(subkey, (h, w))
+            # Convert JAX array to numpy for OpenCV
+            octave_noise = np.array(octave_noise)
         else:
             octave_noise = np.random.randn(h, w).astype(np.float32)
         
