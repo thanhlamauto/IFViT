@@ -68,8 +68,9 @@ def setup_tpu():
 # ============================================================================
 
 class TrainState(train_state.TrainState):
-    """Custom training state with batch_stats for BatchNorm."""
+    """Custom training state with batch_stats for BatchNorm and pos_encoding for LoFTR."""
     batch_stats: Dict = None
+    pos_encoding: Dict = None
 
 
 def create_train_state(config: Dict, rng: jax.random.PRNGKey) -> TrainState:
@@ -90,24 +91,27 @@ def create_train_state(config: Dict, rng: jax.random.PRNGKey) -> TrainState:
     dummy_img = jnp.zeros((1, config["image_size"], config["image_size"], 1))
     
     # Initialize parameters
-    # Use train=True to ensure batch_stats is created
+    # Use train=True to ensure batch_stats and pos_encoding are created
     rng, init_rng = jax.random.split(rng)
     variables = model.init(init_rng, dummy_img, dummy_img, train=True)
     params = variables['params']
     batch_stats = variables.get('batch_stats', {})
+    pos_encoding = variables.get('pos_encoding', {})
     
-    # Ensure batch_stats is not None or empty
-    if batch_stats is None or len(batch_stats) == 0:
-        # If batch_stats is empty, initialize it by running a forward pass
-        # This will create the batch_stats collection
-        _, batch_stats = model.apply(
+    # Ensure batch_stats and pos_encoding are not None or empty
+    if batch_stats is None or len(batch_stats) == 0 or \
+       pos_encoding is None or len(pos_encoding) == 0:
+        # If collections are empty, initialize them by running a forward pass
+        # This will create the batch_stats and pos_encoding collections
+        _, updated_vars = model.apply(
             variables,
             dummy_img,
             dummy_img,
             train=True,
-            mutable=['batch_stats']
+            mutable=['batch_stats', 'pos_encoding']
         )
-        batch_stats = batch_stats['batch_stats']
+        batch_stats = updated_vars.get('batch_stats', {})
+        pos_encoding = updated_vars.get('pos_encoding', {})
     
     # Load LoFTR pretrained weights if specified
     loftr_ckpt = config.get("loftr_pretrained_ckpt")
@@ -151,12 +155,13 @@ def create_train_state(config: Dict, rng: jax.random.PRNGKey) -> TrainState:
         )
     )
     
-    # Create training state with batch_stats
+    # Create training state with batch_stats and pos_encoding
     state = TrainState.create(
         apply_fn=model.apply,
         params=params,
         tx=tx,
-        batch_stats=batch_stats
+        batch_stats=batch_stats,
+        pos_encoding=pos_encoding
     )
     
     return state
@@ -195,20 +200,26 @@ def train_step_fn(
     lambda_D = LAMBDA_D
     
     def loss_fn(params):
-        # Forward pass with batch_stats
-        # Ensure batch_stats is not None
+        # Forward pass with batch_stats and pos_encoding
+        # Ensure collections are not None
         batch_stats_dict = state.batch_stats if state.batch_stats is not None else {}
-        variables = {'params': params, 'batch_stats': batch_stats_dict}
+        pos_encoding_dict = state.pos_encoding if state.pos_encoding is not None else {}
+        variables = {
+            'params': params,
+            'batch_stats': batch_stats_dict,
+            'pos_encoding': pos_encoding_dict
+        }
         outputs, updated_variables = state.apply_fn(
             variables,
             img1,
             img2,
             train=True,
             rngs={'dropout': rng},
-            mutable=['batch_stats']
+            mutable=['batch_stats', 'pos_encoding']
         )
         P, matches_out, feat1, feat2 = outputs
         updated_batch_stats = updated_variables.get('batch_stats', {})
+        updated_pos_encoding = updated_variables.get('pos_encoding', {})
         
         # Compute loss
         losses = total_loss_dense(
@@ -219,15 +230,18 @@ def train_step_fn(
             feature_shape=None
         )
         
-        return losses['total'], (losses, updated_batch_stats)
+        return losses['total'], (losses, updated_batch_stats, updated_pos_encoding)
     
     # Compute gradients
     grad_fn = jax.value_and_grad(loss_fn, has_aux=True)
-    (loss, (metrics, updated_batch_stats)), grads = grad_fn(state.params)
+    (loss, (metrics, updated_batch_stats, updated_pos_encoding)), grads = grad_fn(state.params)
     
-    # Update parameters and batch_stats
+    # Update parameters, batch_stats, and pos_encoding
     state = state.apply_gradients(grads=grads)
-    state = state.replace(batch_stats=updated_batch_stats['batch_stats'])
+    state = state.replace(
+        batch_stats=updated_batch_stats.get('batch_stats', state.batch_stats),
+        pos_encoding=updated_pos_encoding.get('pos_encoding', state.pos_encoding)
+    )
     
     return state, metrics
 
@@ -325,7 +339,8 @@ def train_dense_reg_tpu(
             apply_fn=state_dict['apply_fn'],
             params=state_dict['params'],
             tx=state_dict['tx'],
-            batch_stats=state_dict.get('batch_stats', {})
+            batch_stats=state_dict.get('batch_stats', {}),
+            pos_encoding=state_dict.get('pos_encoding', {})
         )
         start_epoch = metadata.get('epoch', 0) + 1
     else:
@@ -347,18 +362,26 @@ def train_dense_reg_tpu(
         logger.log(f"⚠ Error loading datasets: {e}")
         raise
     
-    # Ensure batch_stats is not None or empty before replicating
-    if state.batch_stats is None or len(state.batch_stats) == 0:
-        # Initialize batch_stats if it's None or empty
+    # Ensure batch_stats and pos_encoding are not None or empty before replicating
+    if state.batch_stats is None or len(state.batch_stats) == 0 or \
+       state.pos_encoding is None or len(state.pos_encoding) == 0:
+        # Initialize collections if they're None or empty
         dummy_img = jnp.zeros((1, config["image_size"], config["image_size"], 1))
-        _, batch_stats = state.apply_fn(
-            {'params': state.params, 'batch_stats': {}},
+        _, updated_vars = state.apply_fn(
+            {
+                'params': state.params,
+                'batch_stats': state.batch_stats if state.batch_stats else {},
+                'pos_encoding': state.pos_encoding if state.pos_encoding else {}
+            },
             dummy_img,
             dummy_img,
             train=True,
-            mutable=['batch_stats']
+            mutable=['batch_stats', 'pos_encoding']
         )
-        state = state.replace(batch_stats=batch_stats['batch_stats'])
+        state = state.replace(
+            batch_stats=updated_vars.get('batch_stats', {}).get('batch_stats', state.batch_stats),
+            pos_encoding=updated_vars.get('pos_encoding', {}).get('pos_encoding', state.pos_encoding)
+        )
     
     # Replicate state across devices
     state = jax_utils.replicate(state)
