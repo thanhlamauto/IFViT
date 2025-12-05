@@ -308,15 +308,32 @@ def train_dense_reg_tpu(
         state = create_train_state(config, init_rng)
         start_epoch = 0
     
+    # Load dataset entries first (before creating pmap)
+    try:
+        roots = PaperDatasetRoots()
+        train_entries = build_paper_train_entries(roots)
+        val_entries = build_paper_val_entries(roots)
+        
+        logger.log(f"Loaded {len(train_entries)} training entries")
+        logger.log(f"Loaded {len(val_entries)} validation entries")
+        
+        if len(train_entries) == 0:
+            raise ValueError("No training entries found. Check dataset paths.")
+    except Exception as e:
+        logger.log(f"⚠ Error loading datasets: {e}")
+        raise
+    
     # Replicate state across devices
     state = jax_utils.replicate(state)
     
-    # Create pmapped training step
+    # Create pmapped training step (after dataset loading)
     # Note: Removed config from function signature to avoid pmap issues with Python dicts
+    # Use static_argnums to ensure pmap doesn't trace through dataset loading functions
     train_step_pmap = jax.pmap(
         train_step_fn,
         axis_name='batch',
-        donate_argnums=(0,)  # Donate state buffer for efficiency
+        donate_argnums=(0,),  # Donate state buffer for efficiency
+        static_broadcasted_argnums=()  # No static args (all are JAX arrays)
     )
     
     # Training loop
@@ -329,17 +346,8 @@ def train_dense_reg_tpu(
     for epoch in range(start_epoch, config["num_epochs"]):
         logger.log(f"\nEpoch {epoch + 1}/{config['num_epochs']}")
         
-        # Load dataset entries
+        # Use pre-loaded entries (reload if needed for new epoch)
         try:
-            roots = PaperDatasetRoots()
-            train_entries = build_paper_train_entries(roots)
-            val_entries = build_paper_val_entries(roots)
-            
-            logger.log(f"Loaded {len(train_entries)} training entries")
-            logger.log(f"Loaded {len(val_entries)} validation entries")
-            
-            if len(train_entries) == 0:
-                raise ValueError("No training entries found. Check dataset paths.")
             
             # Create dataset iterator
             train_dataset = dense_reg_dataset(
