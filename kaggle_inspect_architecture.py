@@ -89,10 +89,14 @@ def compare_with_paper(component: str, actual: Dict, expected: Dict):
     for key, expected_val in expected.items():
         actual_val = actual.get(key)
         if actual_val is not None:
-            match = "✓" if actual_val == expected_val else "✗"
-            print(f"    {match} {key:20s}: actual={actual_val:15s}, expected={expected_val:15s}")
+            # Convert to string for comparison and formatting
+            actual_str = str(actual_val)
+            expected_str = str(expected_val)
+            match = "✓" if actual_str == expected_str else "✗"
+            print(f"    {match} {key:20s}: actual={actual_str:15s}, expected={expected_str:15s}")
         else:
-            print(f"    ? {key:20s}: not found, expected={expected_val:15s}")
+            expected_str = str(expected_val)
+            print(f"    ? {key:20s}: not found, expected={expected_str:15s}")
 
 
 # ============================================================================
