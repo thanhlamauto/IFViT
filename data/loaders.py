@@ -50,6 +50,58 @@ def normalize_image(img: np.ndarray, target_size: Optional[Tuple[int, int]] = No
     return img.astype(np.float32)
 
 
+def _generate_dense_reg_pairs(
+    entries: List[FingerprintEntry],
+    imposter_ratio: float = 0.25
+) -> List[Tuple[FingerprintEntry, Optional[FingerprintEntry], bool]]:
+    """
+    Generate pairs for dense registration training.
+    
+    According to IFViT paper:
+    - Genuine pairs: same finger (original ↔ corrupted)
+    - Imposter pairs: different fingers (GT "no match")
+    
+    Args:
+        entries: List of FingerprintEntry
+        imposter_ratio: Ratio of imposter pairs (default 0.25 = 25%)
+        
+    Returns:
+        List of (entry1, entry2, is_genuine) tuples
+        - Genuine: (entry, None, True) - entry will be paired with corrupted version
+        - Imposter: (entry1, entry2, False) - different fingers, no correspondences
+    """
+    pairs = []
+    
+    # Genuine pairs: each entry → corrupted version (same finger)
+    for entry in entries:
+        pairs.append((entry, None, True))
+    
+    # Imposter pairs: different fingers
+    finger_to_entries = {}
+    for entry in entries:
+        fid = entry.finger_global_id
+        if fid is not None:
+            if fid not in finger_to_entries:
+                finger_to_entries[fid] = []
+            finger_to_entries[fid].append(entry)
+    
+    n_genuine = len(pairs)
+    n_imposter = int(n_genuine * imposter_ratio / (1 - imposter_ratio))  # To get 25% of total
+    
+    # Sample imposter pairs
+    unique_fingers = list(finger_to_entries.keys())
+    if len(unique_fingers) >= 2:
+        for _ in range(n_imposter):
+            if len(unique_fingers) < 2:
+                break
+            fid1, fid2 = random.sample(unique_fingers, 2)
+            entry1 = random.choice(finger_to_entries[fid1])
+            entry2 = random.choice(finger_to_entries[fid2])
+            pairs.append((entry1, entry2, False))
+    
+    return pairs
+
+
 def dense_reg_dataset(
     entries: List[FingerprintEntry],
     config: Dict,
@@ -58,6 +110,11 @@ def dense_reg_dataset(
 ) -> Iterator[Dict[str, jnp.ndarray]]:
     """
     Generate batches for dense registration training.
+    
+    According to IFViT paper (Section 4.1):
+    - 75,000 genuine pairs: same finger (original ↔ corrupted)
+    - 25,000 imposter pairs: different fingers (GT "no match")
+    - Total: 100,000 pairs
     
     Args:
         entries: List of FingerprintEntry
@@ -68,21 +125,26 @@ def dense_reg_dataset(
     Yields:
         Batch dictionary with:
         - img1: [B, H, W, 1] original images
-        - img2: [B, H, W, 1] corrupted images
+        - img2: [B, H, W, 1] corrupted/different images
         - matches: [B, K, 4] ground-truth correspondences
-        - valid_mask: [B, K] validity mask
+        - valid_mask: [B, K] validity mask (all False for imposter pairs)
     """
     # Filter by split
     split_entries = [e for e in entries if e.split == split]
     
+    # Generate pairs (genuine + imposter)
+    imposter_ratio = config.get("imposter_ratio", 0.25)  # 25% imposter
+    pairs = _generate_dense_reg_pairs(split_entries, imposter_ratio=imposter_ratio)
+    
     if shuffle:
-        random.Random(42).shuffle(split_entries)
+        random.Random(42).shuffle(pairs)
     
     batch_size = config["batch_size"]
     image_size = config["image_size"]
+    num_points = config.get("num_correspondence_points", 1000)
     
-    for i in range(0, len(split_entries), batch_size):
-        batch_entries = split_entries[i:i+batch_size]
+    for i in range(0, len(pairs), batch_size):
+        batch_pairs = pairs[i:i+batch_size]
         
         batch_img1 = []
         batch_img2 = []
@@ -91,28 +153,42 @@ def dense_reg_dataset(
         
         rng = jax.random.PRNGKey(42 + i // batch_size)
         
-        for entry in batch_entries:
-            # Load image
-            img = load_image(entry.path)
-            img = normalize_image(img, target_size=(image_size, image_size))
+        for entry1, entry2, is_genuine in batch_pairs:
+            # Load first image
+            img1 = load_image(entry1.path)
+            img1 = normalize_image(img1, target_size=(image_size, image_size))
             
-            # Apply corruption
-            rng, corrupt_rng = jax.random.split(rng)
-            corrupted, transform = random_corrupt_fingerprint(
-                (img * 255).astype(np.float32), 
-                corrupt_rng
-            )
-            corrupted = corrupted / 255.0
-            
-            # Generate GT correspondences
-            matches, valid = generate_gt_correspondences(
-                img, corrupted, transform, num_points=1000
-            )
-            
-            batch_img1.append(img[..., None])
-            batch_img2.append(corrupted[..., None])
-            batch_matches.append(matches)
-            batch_valid.append(valid)
+            if is_genuine:
+                # Genuine pair: original ↔ corrupted (same finger)
+                rng, corrupt_rng = jax.random.split(rng)
+                corrupted, transform = random_corrupt_fingerprint(
+                    (img1 * 255).astype(np.float32), 
+                    corrupt_rng
+                )
+                corrupted = corrupted / 255.0
+                
+                # Generate GT correspondences
+                matches, valid = generate_gt_correspondences(
+                    img1, corrupted, transform, num_points=num_points
+                )
+                
+                batch_img1.append(img1[..., None])
+                batch_img2.append(corrupted[..., None])
+                batch_matches.append(matches)
+                batch_valid.append(valid)
+            else:
+                # Imposter pair: different fingers (GT "no match")
+                img2 = load_image(entry2.path)
+                img2 = normalize_image(img2, target_size=(image_size, image_size))
+                
+                # No valid correspondences (all zeros, all invalid)
+                matches = np.zeros((num_points, 4), dtype=np.float32)
+                valid = np.zeros(num_points, dtype=bool)
+                
+                batch_img1.append(img1[..., None])
+                batch_img2.append(img2[..., None])
+                batch_matches.append(matches)
+                batch_valid.append(valid)
         
         # Pad to same length
         max_matches = max(len(m) for m in batch_matches)

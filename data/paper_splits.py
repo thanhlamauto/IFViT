@@ -51,44 +51,59 @@ class PaperDatasetRoots:
 
 def build_paper_train_entries(roots: PaperDatasetRoots) -> List[FingerprintEntry]:
     """
-    Build combined training entries following IFViT paper (without MOLF / PrintsGAN).
-
-    Includes:
-        - FVC2002 DB1A, DB2A, DB3A  (Db1_a, Db2_a, Db3_a)
-        - NIST SD301a               (all devices / captures by default)
-        - NIST SD302a               (train split)
-        - NIST SD300                (rolled + plain, optional extra training data)
+    Build combined training entries following IFViT paper.
+    
+    According to paper (Section 4.1, Datasets):
+    - FVC2002: DB1A, DB2A, DB3A
+    - NIST SD301a: partitions A, B, C, E, J, K, M, N
+    - NIST SD302a: partitions A, B, C, D, E, F, U, V, L, M
+    - NIST SD300: replaces MOLF (DB1, DB2) from paper
+    
+    Total: ~25,090 original fingerprint images
+    After augmentation (3 noise models): ~100,360 training images
+    Training pairs: 100,000 (75k genuine + 25k imposter)
     """
     datasets = []
 
-    # FVC2002: Db1_a, Db2_a, Db3_a (training)
+    # FVC2002: DB1A, DB2A, DB3A (as per paper)
     for db_name in ["Db1_a", "Db2_a", "Db3_a"]:
         datasets.append(FVC2002Dataset(root_dir=roots.fvc2002, db_name=db_name, split="train"))
 
-    # NIST SD301a: use as-is (you can narrow devices/captures later if needed)
+    # NIST SD301a: partitions A, B, C, E, J, K, M, N (as per paper)
+    # Note: SD301a uses device codes like "dryrun-A", "dryrun-B", etc.
+    sd301a_partitions = ["dryrun-A", "dryrun-B", "dryrun-C", "dryrun-E", 
+                         "dryrun-J", "dryrun-K", "dryrun-M", "dryrun-N"]
     datasets.append(
         NISTSD301aDataset(
             root_dir=roots.nist_sd301a,
             split="train",
-            # Example: only 500 PPI if you want to be strict
-            resolutions=["500"],
+            devices=sd301a_partitions,
+            resolutions=["500"],  # Use 500 PPI as per paper
         )
     )
 
-    # NIST SD300: optional extra training data (rolled + plain)
+    # NIST SD302a: partitions A, B, C, D, E, F, U, V, L, M (as per paper)
+    # Note: SD302a uses device codes A, B, C, D, E, F, G, H, but paper specifies specific partitions
+    # Assuming device codes A-H map to partitions, we use: A, B, C, D, E, F, and U, V, L, M
+    # Since SD302a uses A-H, we'll use: A, B, C, D, E, F (6 devices)
+    # Note: U, V, L, M might be different naming - adjust based on actual dataset structure
+    sd302a_partitions = ["A", "B", "C", "D", "E", "F"]  # Paper: A, B, C, D, E, F, U, V, L, M
+    # TODO: Verify if U, V, L, M are separate devices or different naming convention
+    datasets.append(
+        NISTSD302aDataset(
+            root_dir=roots.nist_sd302a,
+            split="train",
+            devices=sd302a_partitions,  # Filter to paper-specified partitions
+        )
+    )
+
+    # NIST SD300: replaces MOLF (DB1, DB2) from paper
+    # Paper used MOLF DB1, DB2 - we use NIST SD300 as replacement
     datasets.append(
         NISTSD300Dataset(
             root_dir=roots.nist_sd300,
             split="train",
             impression_types=None,  # both roll and plain
-        )
-    )
-
-    # NIST SD302a: train split
-    datasets.append(
-        NISTSD302aDataset(
-            root_dir=roots.nist_sd302a,
-            split="train",
         )
     )
 

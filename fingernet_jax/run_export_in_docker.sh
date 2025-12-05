@@ -52,14 +52,24 @@ docker run --rm \
   -w /workspace/fingernet_jax \
   tensorflow/tensorflow:1.15.5-gpu-py3 \
   bash -c "
-    echo 'Installing dependencies...'
-    pip install -q numpy scipy opencv-python matplotlib scipy
-    
-    echo 'Exporting weights...'
-    python export_fingernet_weights_tf1.py
-    
+    set -e
+    echo '[1/4] Installing dependencies...'
+    echo '  → numpy...'
+    pip install --no-cache-dir numpy 2>&1 | grep -E '(Collecting|Installing|Successfully)' || true
+    echo '  → scipy...'
+    pip install --no-cache-dir scipy 2>&1 | grep -E '(Collecting|Installing|Successfully)' || true
+    echo '  → opencv-python...'
+    pip install --no-cache-dir opencv-python 2>&1 | grep -E '(Collecting|Installing|Successfully)' || true
+    echo '  → matplotlib...'
+    pip install --no-cache-dir matplotlib 2>&1 | grep -E '(Collecting|Installing|Successfully)' || true
+    echo '  ✓ All dependencies installed'
     echo ''
-    echo 'Checking output...'
+    
+    echo '[2/4] Starting export script...'
+    python export_fingernet_weights_tf1.py
+    echo ''
+    
+    echo '[3/4] Verifying output...'
     if [ -f fingernet_keras_tf1_weights.npz ]; then
         ls -lh fingernet_keras_tf1_weights.npz
         echo ''
@@ -70,7 +80,9 @@ docker run --rm \
     fi
   "
 
-if [ -f "$OUTPUT_NPZ" ]; then
+DOCKER_EXIT=$?
+
+if [ $DOCKER_EXIT -eq 0 ] && [ -f "$OUTPUT_NPZ" ]; then
     echo ""
     echo "=========================================="
     echo "✓ Export completed successfully!"
@@ -79,13 +91,24 @@ if [ -f "$OUTPUT_NPZ" ]; then
     echo "Output file: $OUTPUT_NPZ"
     echo "File size: $(du -h "$OUTPUT_NPZ" | cut -f1)"
     echo ""
-    echo "Next step: Convert to Flax format"
+    echo "[4/4] Next step: Convert to Flax format"
     echo "  cd $SCRIPT_DIR"
     echo "  python convert_from_npz.py"
     echo ""
 else
     echo ""
-    echo "✗ Export failed - output file not found"
+    echo "=========================================="
+    echo "✗ Export failed"
+    echo "=========================================="
+    echo ""
+    if [ $DOCKER_EXIT -ne 0 ]; then
+        echo "Docker container exited with code: $DOCKER_EXIT"
+    fi
+    if [ ! -f "$OUTPUT_NPZ" ]; then
+        echo "Output file not found: $OUTPUT_NPZ"
+    fi
+    echo ""
+    echo "Please check the error messages above."
     exit 1
 fi
 

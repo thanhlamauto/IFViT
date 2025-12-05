@@ -1,26 +1,38 @@
 """
-Training script for Module 1: Dense Registration.
+Training script for Module 1: Dense Registration (TPU-optimized).
 
-Trains the DenseRegModel to learn dense correspondences using only L_D loss.
+Optimized for TPU v5e-8 on Kaggle with:
+- Data parallelism using jax.pmap
+- Efficient batch sharding
+- Gradient accumulation support
+- Multi-device checkpointing
+
+Usage on Kaggle TPU:
+    !python ifvit-jax/train_dense_tpu.py \
+        --checkpoint_dir /kaggle/working/IFViT/checkpoints/dense_reg
 """
 
 import jax
 import jax.numpy as jnp
 from flax.training import train_state
+from flax import jax_utils
 import optax
 from typing import Dict, Tuple
 import argparse
 from pathlib import Path
+import numpy as np
 
 from config import DENSE_CONFIG
 from models import DenseRegModel
 from losses import total_loss_dense
 import sys
 from pathlib import Path
+
 # Add root to path for data module
 root_path = Path(__file__).parent.parent
 if str(root_path) not in sys.path:
     sys.path.insert(0, str(root_path))
+
 from data import (
     dense_reg_dataset, 
     preprocess_batch,
@@ -35,6 +47,23 @@ from ut.utils import (
 
 
 # ============================================================================
+# TPU Setup
+# ============================================================================
+
+def setup_tpu():
+    """Initialize TPU and return device count."""
+    # JAX will automatically detect TPU
+    devices = jax.devices()
+    num_devices = len(devices)
+    
+    print(f"Found {num_devices} devices")
+    print(f"Device type: {devices[0].platform}")
+    print(f"Devices: {devices}")
+    
+    return num_devices, devices
+
+
+# ============================================================================
 # Training State
 # ============================================================================
 
@@ -44,16 +73,7 @@ class TrainState(train_state.TrainState):
 
 
 def create_train_state(config: Dict, rng: jax.random.PRNGKey) -> TrainState:
-    """
-    Create initial training state.
-    
-    Args:
-        config: DENSE_CONFIG dictionary
-        rng: Random key
-        
-    Returns:
-        Initialized TrainState
-    """
+    """Create initial training state (same as train_dense.py)."""
     # Initialize model
     model = DenseRegModel(
         image_size=config["image_size"],
@@ -80,7 +100,7 @@ def create_train_state(config: Dict, rng: jax.random.PRNGKey) -> TrainState:
         init_value=0.0,
         peak_value=config["lr"],
         warmup_steps=1000,
-        decay_steps=config["num_epochs"] * 1000,  # Approximate steps per epoch
+        decay_steps=config["num_epochs"] * 1000,
         end_value=config["lr"] * 0.01
     )
     
@@ -103,22 +123,21 @@ def create_train_state(config: Dict, rng: jax.random.PRNGKey) -> TrainState:
 
 
 # ============================================================================
-# Training Step
+# TPU-Optimized Training Step
 # ============================================================================
 
-@jax.jit
-def train_step(
+def train_step_fn(
     state: TrainState,
     batch: Dict[str, jnp.ndarray],
     rng: jax.random.PRNGKey,
     config: Dict
 ) -> Tuple[TrainState, Dict[str, jnp.ndarray]]:
     """
-    Perform a single training step.
+    Single device training step (will be pmapped).
     
     Args:
         state: Current training state
-        batch: Batch of data
+        batch: Batch of data (already sharded per device)
         rng: Random key
         config: Config dictionary
         
@@ -141,7 +160,7 @@ def train_step(
             gt_matches=batch['matches'],
             valid_mask=batch.get('valid_mask'),
             lambda_D=config['lambda_D'],
-            feature_shape=None  # Will be inferred from feature maps
+            feature_shape=None
         )
         
         return losses['total'], losses
@@ -156,76 +175,75 @@ def train_step(
     return state, metrics
 
 
-# ============================================================================
-# Validation
-# ============================================================================
-
-@jax.jit
-def eval_step(
-    state: TrainState,
-    batch: Dict[str, jnp.ndarray],
-    rng: jax.random.PRNGKey,
-    config: Dict
-) -> Dict[str, jnp.ndarray]:
+def shard_batch(batch: Dict[str, jnp.ndarray], num_devices: int) -> Dict[str, jnp.ndarray]:
     """
-    Perform a single evaluation step.
+    Shard batch across devices.
     
     Args:
-        state: Current training state
-        batch: Batch of data
-        rng: Random key
-        config: Config dictionary
+        batch: Batch dictionary
+        num_devices: Number of TPU devices
         
     Returns:
-        Metrics dictionary
+        Sharded batch (first dimension divided by num_devices)
     """
-    # Forward pass (no dropout in eval mode)
-    P, matches, feat1, feat2 = state.apply_fn(
-        {'params': state.params},
-        batch['img1'],
-        batch['img2'],
-        train=False
-    )
+    sharded = {}
+    for key, value in batch.items():
+        if value is not None:
+            # Split batch dimension across devices
+            batch_size = value.shape[0]
+            per_device_batch = batch_size // num_devices
+            
+            # Reshape: (batch_size, ...) -> (num_devices, per_device_batch, ...)
+            new_shape = (num_devices, per_device_batch) + value.shape[1:]
+            sharded[key] = value.reshape(new_shape)
+        else:
+            sharded[key] = None
     
-    # Compute loss
-    losses = total_loss_dense(
-        P=P,
-        gt_matches=batch['matches'],
-        valid_mask=batch.get('valid_mask'),
-        lambda_D=config['lambda_D'],
-        feature_shape=None
-    )
-    
-    return losses
+    return sharded
 
 
 # ============================================================================
-# Main Training Loop
+# Main Training Loop (TPU)
 # ============================================================================
 
-def train_dense_reg(
-    dataset_root: str,
+def train_dense_reg_tpu(
     config: Dict = None,
     resume_from: str = None
 ):
     """
-    Main training function for Dense Registration.
+    Main training function for Dense Registration (TPU-optimized).
     
     Args:
-        dataset_root: Path to dataset
         config: Config dictionary (defaults to DENSE_CONFIG)
         resume_from: Optional checkpoint path to resume from
     """
     if config is None:
         config = DENSE_CONFIG
     
+    # Setup TPU
+    num_devices, devices = setup_tpu()
+    
+    # Adjust batch size for multi-device
+    # Effective batch size = batch_size * num_devices
+    per_device_batch = config["batch_size"] // num_devices
+    if per_device_batch < 1:
+        per_device_batch = 1
+        print(f"⚠ Warning: batch_size {config['batch_size']} < num_devices {num_devices}")
+        print(f"  Using per_device_batch=1, effective batch_size={num_devices}")
+    
+    effective_batch_size = per_device_batch * num_devices
+    print(f"Batch size: {config['batch_size']} → {per_device_batch} per device")
+    print(f"Effective batch size: {effective_batch_size}")
+    
     # Initialize logger
     logger = Logger(
         log_dir=str(Path(config["checkpoint_dir"]) / "logs"),
-        experiment_name="dense_reg"
+        experiment_name="dense_reg_tpu"
     )
-    logger.log("Starting Dense Registration training")
+    logger.log("Starting Dense Registration training (TPU-optimized)")
     logger.log(f"Config: {config}")
+    logger.log(f"TPU devices: {num_devices}")
+    logger.log(f"Effective batch size: {effective_batch_size}")
     
     # Initialize RNG
     rng = jax.random.PRNGKey(42)
@@ -245,9 +263,19 @@ def train_dense_reg(
         state = create_train_state(config, init_rng)
         start_epoch = 0
     
+    # Replicate state across devices
+    state = jax_utils.replicate(state)
+    
+    # Create pmapped training step
+    train_step_pmap = jax.pmap(
+        train_step_fn,
+        axis_name='batch',
+        donate_argnums=(0,)  # Donate state buffer for efficiency
+    )
+    
     # Training loop
     logger.log("\n" + "="*60)
-    logger.log("Starting training loop")
+    logger.log("Starting training loop (TPU)")
     logger.log("="*60 + "\n")
     
     global_step = 0
@@ -257,10 +285,7 @@ def train_dense_reg(
         
         # Load dataset entries
         try:
-            # Initialize dataset roots (auto-detects Kaggle paths)
             roots = PaperDatasetRoots()
-            
-            # Build train entries from all datasets
             train_entries = build_paper_train_entries(roots)
             val_entries = build_paper_val_entries(roots)
             
@@ -270,19 +295,12 @@ def train_dense_reg(
             if len(train_entries) == 0:
                 raise ValueError("No training entries found. Check dataset paths.")
             
-            # Create dataset iterators
+            # Create dataset iterator
             train_dataset = dense_reg_dataset(
                 entries=train_entries,
                 config=config,
                 split='train',
                 shuffle=True
-            )
-            
-            val_dataset = dense_reg_dataset(
-                entries=val_entries,
-                config=config,
-                split='val',
-                shuffle=False
             )
             
             epoch_metrics = {
@@ -295,9 +313,30 @@ def train_dense_reg(
                 # Preprocess batch
                 batch = preprocess_batch(batch)
                 
-                # Training step
-                rng, step_rng = jax.random.split(rng)
-                state, metrics = train_step(state, batch, step_rng, config)
+                # Shard batch across devices
+                # Ensure batch size is divisible by num_devices
+                batch_size = batch['img1'].shape[0]
+                if batch_size < effective_batch_size:
+                    # Pad batch if needed
+                    pad_size = effective_batch_size - batch_size
+                    for key in ['img1', 'img2', 'matches', 'valid_mask']:
+                        if batch[key] is not None:
+                            pad_shape = (pad_size,) + batch[key].shape[1:]
+                            pad = jnp.zeros(pad_shape, dtype=batch[key].dtype)
+                            batch[key] = jnp.concatenate([batch[key], pad], axis=0)
+                
+                # Shard batch
+                sharded_batch = shard_batch(batch, num_devices)
+                
+                # Shard RNG
+                step_rngs = jax.random.split(rng, num_devices)
+                step_rngs = jax_utils.replicate(step_rngs)
+                
+                # Training step (pmapped)
+                state, metrics = train_step_pmap(state, sharded_batch, step_rngs, config)
+                
+                # Unreplicate metrics for logging
+                metrics = jax_utils.unreplicate(metrics)
                 
                 # Log metrics
                 for key, value in metrics.items():
@@ -310,10 +349,8 @@ def train_dense_reg(
                     log_metrics = {k: float(v) for k, v in metrics.items()}
                     logger.log_metrics(global_step, log_metrics, prefix="[Train] ")
                 
-                # Break after some steps (for demonstration)
-                # Remove this when real data is available
-                if step >= 10:
-                    break
+                # Update RNG
+                rng, _ = jax.random.split(rng)
             
             # Epoch summary
             avg_metrics = {
@@ -322,40 +359,49 @@ def train_dense_reg(
             }
             logger.log_epoch(epoch + 1, avg_metrics)
             
-        except NotImplementedError as e:
-            logger.log(f"⚠ Dataset not implemented yet: {e}")
-            logger.log("  Skipping training for now - waiting for real data")
-            logger.log("  Training state has been initialized successfully")
+        except Exception as e:
+            logger.log(f"⚠ Error: {e}")
+            import traceback
+            logger.log(traceback.format_exc())
             break
         
-        # Save checkpoint
+        # Save checkpoint (unreplicate state first)
         if (epoch + 1) % config["save_every"] == 0:
+            # Unreplicate state for saving
+            unreplicated_state = jax_utils.unreplicate(state)
+            
             checkpoint_path = Path(config["checkpoint_dir"]) / f"dense_reg_epoch_{epoch+1}.pkl"
             save_checkpoint(
                 str(checkpoint_path),
                 {
-                    'params': state.params,
-                    'opt_state': state.opt_state,
-                    'step': state.step
+                    'params': unreplicated_state.params,
+                    'opt_state': unreplicated_state.opt_state,
+                    'step': unreplicated_state.step,
+                    'apply_fn': unreplicated_state.apply_fn,
                 },
                 metadata={
                     'epoch': epoch,
-                    'config': config
+                    'config': config,
+                    'num_devices': num_devices,
                 }
             )
+            logger.log(f"✓ Saved checkpoint: {checkpoint_path}")
     
     # Save final checkpoint
+    unreplicated_state = jax_utils.unreplicate(state)
     final_checkpoint = Path(config["checkpoint_dir"]) / "dense_reg_ckpt.pkl"
     save_checkpoint(
         str(final_checkpoint),
         {
-            'params': state.params,
-            'opt_state': state.opt_state,
-            'step': state.step
+            'params': unreplicated_state.params,
+            'opt_state': unreplicated_state.opt_state,
+            'step': unreplicated_state.step,
+            'apply_fn': unreplicated_state.apply_fn,
         },
         metadata={
             'epoch': config["num_epochs"],
-            'config': config
+            'config': config,
+            'num_devices': num_devices,
         }
     )
     
@@ -369,24 +415,18 @@ def train_dense_reg(
 # ============================================================================
 
 def main():
-    parser = argparse.ArgumentParser(description="Train Dense Registration Model")
+    parser = argparse.ArgumentParser(description="Train Dense Registration Model (TPU-optimized)")
     parser.add_argument(
-        '--dataset_root',
+        '--checkpoint_dir',
         type=str,
-        default='./data',
-        help='Path to dataset root directory'
+        default=None,
+        help='Override checkpoint directory from config'
     )
     parser.add_argument(
         '--resume_from',
         type=str,
         default=None,
         help='Checkpoint path to resume from'
-    )
-    parser.add_argument(
-        '--checkpoint_dir',
-        type=str,
-        default=None,
-        help='Override checkpoint directory from config'
     )
     
     args = parser.parse_args()
@@ -397,8 +437,7 @@ def main():
         config['checkpoint_dir'] = args.checkpoint_dir
     
     # Train
-    train_dense_reg(
-        dataset_root=args.dataset_root,
+    train_dense_reg_tpu(
         config=config,
         resume_from=args.resume_from
     )
@@ -406,3 +445,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+

@@ -53,38 +53,66 @@ def export_weights():
     """
     Load Keras model and export all weights to .npz file.
     """
+    import sys
+    
     print(f"Loading model from: {MODEL_PATH}")
     print(f"Output will be saved to: {OUTPUT_NPZ}")
+    sys.stdout.flush()
     
     # Build model and load weights
-    model = ttd.get_main_net((512, 512, 1), MODEL_PATH)
+    print("Building model architecture...")
+    sys.stdout.flush()
+    
+    try:
+        print("  → Creating model graph (this may take 1-2 minutes)...")
+        sys.stdout.flush()
+        model = ttd.get_main_net((512, 512, 1), MODEL_PATH)
+        print("✓ Model loaded successfully")
+        sys.stdout.flush()
+    except Exception as e:
+        print(f"✗ ERROR loading model: {e}")
+        import traceback
+        traceback.print_exc()
+        raise
     
     # Extract all weights
     weights_dict = {}
+    total_layers = len([l for l in model.layers if len(l.get_weights()) > 0])
+    current_layer = 0
+    
+    print(f"\nExporting weights from {total_layers} layers...")
+    sys.stdout.flush()
+    
     for layer in model.layers:
         layer_name = layer.name
         layer_weights = layer.get_weights()
         
         if len(layer_weights) == 0:
             continue
-            
-        print(f"Exporting layer: {layer_name} ({len(layer_weights)} weight arrays)")
+        
+        current_layer += 1
+        progress = int(100 * current_layer / total_layers)
+        print(f"[{progress:3d}%] Exporting layer: {layer_name} ({len(layer_weights)} weight arrays)")
+        sys.stdout.flush()
         
         # Store weights with layer name as prefix
         for i, w in enumerate(layer_weights):
             key = f"{layer_name}/weight_{i}"
             weights_dict[key] = w
-            print(f"  {key}: shape={w.shape}, dtype={w.dtype}")
         
         # Also store layer class name for reference
         weights_dict[f"{layer_name}/__class__"] = layer.__class__.__name__
     
     # Save to .npz
+    print("\nSaving to .npz file...")
+    sys.stdout.flush()
     os.makedirs(os.path.dirname(OUTPUT_NPZ), exist_ok=True)
     np.savez(OUTPUT_NPZ, **weights_dict)
     
+    file_size_mb = os.path.getsize(OUTPUT_NPZ) / (1024*1024)
     print(f"\n✓ Successfully exported {len(weights_dict)} weight arrays to: {OUTPUT_NPZ}")
-    print(f"  File size: {os.path.getsize(OUTPUT_NPZ) / (1024*1024):.2f} MB")
+    print(f"  File size: {file_size_mb:.2f} MB")
+    sys.stdout.flush()
     
     return OUTPUT_NPZ
 

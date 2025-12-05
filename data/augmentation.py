@@ -1,12 +1,56 @@
 """
 Augmentation and synthetic distortion for Module 1 training.
-"""
 
+According to IFViT paper (Section 4.1):
+- 3 noise models: Sensor noise (Perlin noise), Dryness (erosion), Over-pressurization (dilation)
+- Random rotation ±60° applied to corrupted image
+- Module 1 uses ONLY original + corrupted pairs (NO FingerNet enhancement)
+"""
 import jax
 import jax.numpy as jnp
 import numpy as np
 from typing import Tuple, Optional, Dict
 import cv2
+
+
+def generate_perlin_noise(shape: Tuple[int, int], scale: float = 10.0, rng_key: jax.random.PRNGKey = None) -> np.ndarray:
+    """
+    Generate Perlin-like noise for sensor noise simulation.
+    
+    Simplified Perlin noise using multiple octaves of random noise.
+    This approximates sensor noise as described in IFViT paper.
+    
+    Args:
+        shape: (H, W) output shape
+        scale: Noise scale (higher = smoother noise)
+        rng_key: JAX random key
+        
+    Returns:
+        Noise array (H, W) in range [-1, 1]
+    """
+    H, W = shape
+    noise = np.zeros((H, W), dtype=np.float32)
+    
+    # Multi-octave noise (simplified Perlin)
+    octaves = [1, 2, 4, 8]
+    for octave in octaves:
+        h, w = max(1, H // octave), max(1, W // octave)
+        if rng_key is not None:
+            rng_key, subkey = jax.random.split(rng_key)
+            octave_noise = jax.random.normal(subkey, (h, w))
+        else:
+            octave_noise = np.random.randn(h, w).astype(np.float32)
+        
+        # Upsample to original size
+        if h != H or w != W:
+            octave_noise = cv2.resize(octave_noise, (W, H), interpolation=cv2.INTER_LINEAR)
+        
+        # Weight by octave
+        noise += octave_noise / (octave * scale)
+    
+    # Normalize to [-1, 1]
+    noise = noise / (np.abs(noise).max() + 1e-8)
+    return noise
 
 
 def random_corrupt_fingerprint(
@@ -17,14 +61,18 @@ def random_corrupt_fingerprint(
     """
     Apply random corruptions and transformations to fingerprint image.
     
+    According to IFViT paper (Section 4.1):
+    - 3 noise models: Sensor noise (Perlin noise), Dryness (erosion), Over-pressurization (dilation)
+    - Random rotation ±60° applied AFTER corruption
+    
     Args:
         img: Input fingerprint image (H, W) float32 [0, 255]
         rng_key: JAX random key
         config: Augmentation config dict (from AUGMENT_CONFIG)
         
     Returns:
-        corrupted_img: Transformed/corrupted image (H, W) float32
-        transform_matrix: 3x3 affine transformation matrix
+        corrupted_img: Transformed/corrupted image (H, W) float32 [0, 255]
+        transform_matrix: 3x3 affine transformation matrix (rotation only, applied last)
     """
     if config is None:
         import sys
@@ -37,50 +85,52 @@ def random_corrupt_fingerprint(
         config = AUGMENT_CONFIG
     
     H, W = img.shape
-    # Split into 7 keys: 1 for rng_key update + 6 for operations
-    rng_key, *subkeys = jax.random.split(rng_key, 7)
+    # Split into 6 keys: 1 for rng_key update + 5 for operations
+    rng_key, *subkeys = jax.random.split(rng_key, 6)
     
-    # Rotation (±60°)
+    # Start with original image
+    corrupted = img.copy()
+    corrupted_uint8 = corrupted.astype(np.uint8)
+    
+    # Apply ONE of 3 noise models (as per paper):
+    # Paper: "Áp dụng 3 loại noise / biến dạng cho mỗi ảnh"
+    # Interpretation: Each image gets ONE of the 3 noise types
+    noise_type = jax.random.randint(subkeys[0], shape=(), minval=0, maxval=3)
+    
+    if noise_type == 0:
+        # 1. Sensor noise → Perlin noise
+        perlin_noise = generate_perlin_noise((H, W), scale=10.0, rng_key=subkeys[1])
+        noise_scale = config.get("perlin_noise_scale", 0.1) * 255
+        corrupted = corrupted + perlin_noise * noise_scale
+        corrupted_uint8 = np.clip(corrupted, 0, 255).astype(np.uint8)
+    elif noise_type == 1:
+        # 2. Dryness → Erosion
+        kernel = np.ones(config.get("morph_kernel_size", (3, 3)), np.uint8)
+        corrupted_uint8 = cv2.erode(corrupted_uint8, kernel, iterations=1)
+    else:  # noise_type == 2
+        # 3. Over-pressurization → Dilation
+        kernel = np.ones(config.get("morph_kernel_size", (3, 3)), np.uint8)
+        corrupted_uint8 = cv2.dilate(corrupted_uint8, kernel, iterations=1)
+    
+    corrupted = corrupted_uint8.astype(np.float32)
+    
+    # Apply rotation ±60° (as per paper, applied after corruption)
     angle = jax.random.uniform(
-        subkeys[0], 
+        subkeys[2], 
         minval=config["rotation_range"][0], 
         maxval=config["rotation_range"][1]
     )
     center = (W / 2, H / 2)
     M_rot = cv2.getRotationMatrix2D(center, float(angle), 1.0)
     
-    # Translation (optional, small)
-    tx = jax.random.uniform(subkeys[1], minval=-W*0.1, maxval=W*0.1)
-    ty = jax.random.uniform(subkeys[2], minval=-H*0.1, maxval=H*0.1)
-    M_trans = np.array([[1, 0, tx], [0, 1, ty]], dtype=np.float32)
+    # Apply rotation transformation
+    corrupted = cv2.warpAffine(corrupted, M_rot, (W, H), flags=cv2.INTER_LINEAR)
     
-    # Combine rotation + translation
-    M = M_rot.copy()
-    M[0, 2] += tx
-    M[1, 2] += ty
+    # Clip to valid range
+    corrupted = np.clip(corrupted, 0, 255)
     
-    # Apply transformation
-    corrupted = cv2.warpAffine(img, M, (W, H), flags=cv2.INTER_LINEAR)
-    
-    # Add noise (Perlin-like or Gaussian)
-    noise = jax.random.normal(subkeys[3], img.shape) * config.get("noise_std", 0.02) * 255
-    corrupted = np.clip(corrupted + noise, 0, 255)
-    
-    # Morphological operations
-    corrupted_uint8 = corrupted.astype(np.uint8)
-    
-    if jax.random.uniform(subkeys[4]) < config.get("erosion_prob", 0.3):
-        kernel = np.ones(config.get("morph_kernel_size", (3, 3)), np.uint8)
-        corrupted_uint8 = cv2.erode(corrupted_uint8, kernel, iterations=1)
-    
-    if jax.random.uniform(subkeys[5]) < config.get("dilation_prob", 0.3):
-        kernel = np.ones(config.get("morph_kernel_size", (3, 3)), np.uint8)
-        corrupted_uint8 = cv2.dilate(corrupted_uint8, kernel, iterations=1)
-    
-    corrupted = corrupted_uint8.astype(np.float32)
-    
-    # Convert M to 3x3 homogeneous transform
-    transform_matrix = np.vstack([M, [0, 0, 1]]).astype(np.float32)
+    # Convert rotation matrix to 3x3 homogeneous transform
+    transform_matrix = np.vstack([M_rot, [0, 0, 1]]).astype(np.float32)
     
     return corrupted, transform_matrix
 

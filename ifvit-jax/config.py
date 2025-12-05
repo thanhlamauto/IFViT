@@ -3,6 +3,11 @@ Configuration dictionaries for IFViT-JAX training.
 
 Module 1 (DenseReg): Dense correspondence registration using only L_D loss.
 Module 2 (Matcher): Fingerprint matching using L_D, L_E, and L_A losses.
+
+Note on Paths:
+- Local development: Use relative paths (./checkpoints/...)
+- Kaggle notebooks: Use absolute paths (/kaggle/working/IFViT/checkpoints/...)
+- Scripts will automatically detect Kaggle environment and adjust paths if needed
 """
 
 # ============================================================================
@@ -33,6 +38,10 @@ DENSE_CONFIG = {
     "use_loftr": True,  # Use LoFTR LocalFeatureTransformer (for loading pretrained weights)
     "attention_type": "linear",  # 'linear' or 'full'
     "loftr_pretrained_ckpt": None,  # Path to converted LoFTR checkpoint (.npz)
+    
+    # Training pairs (from paper Section 4.1)
+    "imposter_ratio": 0.25,  # 25% imposter pairs (75% genuine)
+    "num_correspondence_points": 1000,  # Number of GT correspondence points per pair
     
     # Checkpointing
     "checkpoint_dir": "./checkpoints/dense_reg",
@@ -126,22 +135,21 @@ INFER_CONFIG = {
 # Data Augmentation Configuration
 # ============================================================================
 AUGMENT_CONFIG = {
-    # Rotation
+    # Rotation (as per IFViT paper: ±60°)
     "rotation_range": (-60, 60),  # Degrees
     
-    # Noise
-    "noise_std": 0.02,
+    # Noise models (as per IFViT paper Section 4.1):
+    # Each image gets ONE of 3 noise types:
+    # 1. Sensor noise: Perlin noise
+    "perlin_noise_scale": 0.1,  # Scale factor for Perlin noise
+    
+    # 2. Dryness: Erosion
+    # 3. Over-pressurization: Dilation
     
     # Morphological operations
-    "erosion_prob": 0.3,
-    "dilation_prob": 0.3,
     "morph_kernel_size": (3, 3),
     
-    # Brightness/Contrast
-    "brightness_range": (0.8, 1.2),
-    "contrast_range": (0.8, 1.2),
-    
-    # Blur
-    "gaussian_blur_prob": 0.2,
-    "blur_sigma_range": (0.5, 1.5),
+    # Note: Paper applies 3 noise models (one per image), resulting in ~4x augmentation
+    # (25,090 original → ~100,360 after applying 3 noise types + rotation)
+    # Each original image generates ~4 corrupted versions (one for each noise type + variations)
 }
