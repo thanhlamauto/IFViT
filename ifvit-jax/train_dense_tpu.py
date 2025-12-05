@@ -68,8 +68,8 @@ def setup_tpu():
 # ============================================================================
 
 class TrainState(train_state.TrainState):
-    """Custom training state with additional fields."""
-    pass
+    """Custom training state with batch_stats for BatchNorm."""
+    batch_stats: Dict = None
 
 
 def create_train_state(config: Dict, rng: jax.random.PRNGKey) -> TrainState:
@@ -93,6 +93,7 @@ def create_train_state(config: Dict, rng: jax.random.PRNGKey) -> TrainState:
     rng, init_rng = jax.random.split(rng)
     variables = model.init(init_rng, dummy_img, dummy_img, train=False)
     params = variables['params']
+    batch_stats = variables.get('batch_stats', {})
     
     # Load LoFTR pretrained weights if specified
     loftr_ckpt = config.get("loftr_pretrained_ckpt")
@@ -136,11 +137,12 @@ def create_train_state(config: Dict, rng: jax.random.PRNGKey) -> TrainState:
         )
     )
     
-    # Create training state
+    # Create training state with batch_stats
     state = TrainState.create(
         apply_fn=model.apply,
         params=params,
-        tx=tx
+        tx=tx,
+        batch_stats=batch_stats
     )
     
     return state
@@ -179,14 +181,18 @@ def train_step_fn(
     lambda_D = LAMBDA_D
     
     def loss_fn(params):
-        # Forward pass
-        P, matches_out, feat1, feat2 = state.apply_fn(
-            {'params': params},
+        # Forward pass with batch_stats
+        variables = {'params': params, 'batch_stats': state.batch_stats}
+        outputs, updated_variables = state.apply_fn(
+            variables,
             img1,
             img2,
             train=True,
-            rngs={'dropout': rng}
+            rngs={'dropout': rng},
+            mutable=['batch_stats']
         )
+        P, matches_out, feat1, feat2 = outputs
+        updated_batch_stats = updated_variables['batch_stats']
         
         # Compute loss
         losses = total_loss_dense(
@@ -197,14 +203,15 @@ def train_step_fn(
             feature_shape=None
         )
         
-        return losses['total'], losses
+        return losses['total'], (losses, updated_batch_stats)
     
     # Compute gradients
     grad_fn = jax.value_and_grad(loss_fn, has_aux=True)
-    (loss, metrics), grads = grad_fn(state.params)
+    (loss, (metrics, updated_batch_stats)), grads = grad_fn(state.params)
     
-    # Update parameters
+    # Update parameters and batch_stats
     state = state.apply_gradients(grads=grads)
+    state = state.replace(batch_stats=updated_batch_stats['batch_stats'])
     
     return state, metrics
 
@@ -301,7 +308,8 @@ def train_dense_reg_tpu(
         state = TrainState.create(
             apply_fn=state_dict['apply_fn'],
             params=state_dict['params'],
-            tx=state_dict['tx']
+            tx=state_dict['tx'],
+            batch_stats=state_dict.get('batch_stats', {})
         )
         start_epoch = metadata.get('epoch', 0) + 1
     else:
