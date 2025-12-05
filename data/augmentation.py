@@ -37,7 +37,8 @@ def random_corrupt_fingerprint(
         config = AUGMENT_CONFIG
     
     H, W = img.shape
-    rng_key, *subkeys = jax.random.split(rng_key, 6)
+    # Split into 7 keys: 1 for rng_key update + 6 for operations
+    rng_key, *subkeys = jax.random.split(rng_key, 7)
     
     # Rotation (±60°)
     angle = jax.random.uniform(
