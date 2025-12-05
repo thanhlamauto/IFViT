@@ -20,9 +20,8 @@ from utils_jax import (
     draw_minutiae,
     label2mnt,
     nms,
-    gausslabel,
 )
-from fingernet_flax import FingerNet
+from fingernet_flax import FingerNet, ori_highest_peak_jax
 
 
 PRETRAIN_PARAMS = "./fingernet_flax_params.npz"  # file npz chứa params & batch_stats đã convert
@@ -40,28 +39,6 @@ def load_params_from_npz(path):
     return variables
 
 
-def ori_highest_peak_jax(ori_out_1):
-    """
-    Compute orientation highest peak using Gaussian smoothing.
-    
-    Args:
-        ori_out_1: (B, H, W, 90) orientation distribution
-        
-    Returns:
-        (B, H, W, 90) smoothed orientation distribution
-    """
-    glabel = gausslabel(length=180, stride=2).astype(jnp.float32)  # (1,1,90,1)
-    glabel = jnp.transpose(glabel, (0, 1, 3, 2))  # -> (1,1,1,90)
-    glabel = glabel.reshape((1, 1, 1, glabel.shape[-1]))
-    
-    # Conv along orientation channel
-    return jax.lax.conv_general_dilated(
-        ori_out_1,
-        glabel,
-        window_strides=(1, 1),
-        padding='SAME',
-        dimension_numbers=('NHWC', 'HWIO', 'NHWC')
-    )
 
 
 def build_model_and_state(img_size, params_path=None):

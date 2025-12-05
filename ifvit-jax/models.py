@@ -67,7 +67,7 @@ class ResNet18(nn.Module):
         x = nn.Conv(64, (7, 7), strides=2, padding='SAME', use_bias=False)(x)
         x = nn.BatchNorm(use_running_average=not train)(x)
         x = nn.relu(x)
-        x = nn.max_pool(x, (3, 3), strides=2, padding='SAME')
+        x = nn.max_pool(x, window_shape=(3, 3), strides=(2, 2), padding='SAME')
         
         # Layer 1: 64 filters, 2 blocks
         for _ in range(2):
