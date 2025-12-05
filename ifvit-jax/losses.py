@@ -48,7 +48,7 @@ def dense_reg_loss(
         # gt_matches is (B, K, 4) format - convert to indices
         # Assume feature_shape is provided
         if feature_shape is None:
-            H = W = int(jnp.sqrt(N))
+            H = W = jnp.sqrt(N).astype(jnp.int32)
         else:
             H, W = feature_shape
         
@@ -66,14 +66,18 @@ def dense_reg_loss(
         y2_feat = (y2 / scale).astype(jnp.int32)
         
         # Clamp to valid range
-        x1_feat = jnp.clip(x1_feat, 0, W - 1)
-        y1_feat = jnp.clip(y1_feat, 0, H - 1)
-        x2_feat = jnp.clip(x2_feat, 0, W - 1)
-        y2_feat = jnp.clip(y2_feat, 0, H - 1)
+        # Use JAX arrays for bounds to avoid concretization errors
+        W_int = W.astype(jnp.int32) if isinstance(W, jnp.ndarray) else jnp.array(W, dtype=jnp.int32)
+        H_int = H.astype(jnp.int32) if isinstance(H, jnp.ndarray) else jnp.array(H, dtype=jnp.int32)
+        x1_feat = jnp.clip(x1_feat, 0, W_int - 1)
+        y1_feat = jnp.clip(y1_feat, 0, H_int - 1)
+        x2_feat = jnp.clip(x2_feat, 0, W_int - 1)
+        y2_feat = jnp.clip(y2_feat, 0, H_int - 1)
         
         # Convert to flat indices
-        idx1 = y1_feat * W + x1_feat  # (B, K)
-        idx2 = y2_feat * W + x2_feat  # (B, K)
+        # Use JAX arrays for W
+        idx1 = y1_feat * W_int + x1_feat  # (B, K)
+        idx2 = y2_feat * W_int + x2_feat  # (B, K)
         
         # Gather probabilities
         batch_indices = jnp.arange(B)[:, None]  # (B, 1)

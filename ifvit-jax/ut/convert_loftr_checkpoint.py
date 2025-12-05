@@ -124,17 +124,17 @@ def convert_checkpoint(pytorch_ckpt_path: str, output_path: str, prefix: str = N
             if transformer_keys:
                 print(f"Auto-detected prefix: '{p}' ({len(transformer_keys)} keys)")
                 break
-    
+        
     # If still no keys found, show all keys and let user choose
-    if not transformer_keys:
+        if not transformer_keys:
         print("\n⚠ Warning: No transformer keys found with common prefixes")
         print("  Available keys (first 30):")
         for i, k in enumerate(list(state_dict.keys())[:30]):
-            print(f"    {k}")
+                print(f"    {k}")
         if len(state_dict) > 30:
             print(f"  ... and {len(state_dict) - 30} more keys")
         print("\n  Please specify --prefix manually based on the keys above")
-        return
+            return
     
     # Convert to NumPy and map keys
     print("\nConverting weights to NumPy format...")

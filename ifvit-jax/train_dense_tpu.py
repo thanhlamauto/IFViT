@@ -2,9 +2,8 @@
 Training script for Module 1: Dense Registration (TPU-optimized).
 
 Optimized for TPU v5e-8 on Kaggle with:
-- Data parallelism using jax.pmap
+- Data parallelism using jax.pmap with gradient synchronization
 - Efficient batch sharding
-- Gradient accumulation support
 - Multi-device checkpointing
 
 Usage on Kaggle TPU:
@@ -227,8 +226,9 @@ def train_step_fn(
             mutable=['batch_stats', 'pos_encoding']
         )
         P, matches_out, feat1, feat2 = outputs
-        updated_batch_stats = updated_variables.get('batch_stats', {})
-        updated_pos_encoding = updated_variables.get('pos_encoding', {})
+        # Extract collections directly (no nested .get())
+        updated_batch_stats = updated_variables['batch_stats']
+        updated_pos_encoding = updated_variables['pos_encoding']
         
         # Compute loss
         losses = total_loss_dense(
@@ -245,11 +245,15 @@ def train_step_fn(
     grad_fn = jax.value_and_grad(loss_fn, has_aux=True)
     (loss, (metrics, updated_batch_stats, updated_pos_encoding)), grads = grad_fn(state.params)
     
+    # Average gradients and metrics across devices (critical for data parallelism)
+    grads = jax.lax.pmean(grads, axis_name='batch')
+    metrics = jax.tree_map(lambda x: jax.lax.pmean(x, axis_name='batch'), metrics)
+    
     # Update parameters, batch_stats, and pos_encoding
     state = state.apply_gradients(grads=grads)
     state = state.replace(
-        batch_stats=updated_batch_stats.get('batch_stats', state.batch_stats),
-        pos_encoding=updated_pos_encoding.get('pos_encoding', state.pos_encoding)
+        batch_stats=updated_batch_stats,
+        pos_encoding=updated_pos_encoding
     )
     
     return state, metrics
@@ -343,13 +347,15 @@ def train_dense_reg_tpu(
     # Create training state
     if resume_from:
         logger.log(f"Resuming from checkpoint: {resume_from}")
-        state_dict, metadata = load_checkpoint(resume_from)
-        state = TrainState.create(
-            apply_fn=state_dict['apply_fn'],
-            params=state_dict['params'],
-            tx=state_dict['tx'],
-            batch_stats=state_dict.get('batch_stats', {}),
-            pos_encoding=state_dict.get('pos_encoding', {})
+        raw_state, metadata = load_checkpoint(resume_from)
+        # Create fresh state and restore params, opt_state, step
+        state = create_train_state(config, init_rng)
+        state = state.replace(
+            params=raw_state['params'],
+            opt_state=raw_state['opt_state'],
+            step=raw_state['step'],
+            batch_stats=raw_state.get('batch_stats', {}),
+            pos_encoding=raw_state.get('pos_encoding', {})
         )
         start_epoch = metadata.get('epoch', 0) + 1
     else:
@@ -393,10 +399,10 @@ def train_dense_reg_tpu(
         updated_batch_stats = updated_vars.get('batch_stats', {})
         updated_pos_encoding = updated_vars.get('pos_encoding', {})
         
-        # Update state with initialized collections
+        # Update state with initialized collections (extract directly, no nested .get())
         state = state.replace(
-            batch_stats=updated_batch_stats if updated_batch_stats else state.batch_stats,
-            pos_encoding=updated_pos_encoding if updated_pos_encoding else state.pos_encoding
+            batch_stats=updated_vars['batch_stats'],
+            pos_encoding=updated_vars['pos_encoding']
         )
     
     # Replicate state across devices
@@ -459,8 +465,8 @@ def train_dense_reg_tpu(
                 img1_sharded, img2_sharded, matches_sharded, valid_mask_sharded = shard_batch(batch, num_devices)
                 
                 # Shard RNG - split into per-device keys
-                # jax.random.split returns shape (num_devices, 2) which is correct for pmap
-                step_rngs = jax.random.split(rng, num_devices)
+                rng, step_key = jax.random.split(rng)
+                step_rngs = jax.random.split(step_key, num_devices)
                 
                 # Training step (pmapped)
                 state, metrics = train_step_pmap(
@@ -514,7 +520,8 @@ def train_dense_reg_tpu(
                     'params': unreplicated_state.params,
                     'opt_state': unreplicated_state.opt_state,
                     'step': unreplicated_state.step,
-                    'apply_fn': unreplicated_state.apply_fn,
+                    'batch_stats': unreplicated_state.batch_stats,
+                    'pos_encoding': unreplicated_state.pos_encoding,
                 },
                 metadata={
                     'epoch': epoch,
@@ -533,7 +540,8 @@ def train_dense_reg_tpu(
             'params': unreplicated_state.params,
             'opt_state': unreplicated_state.opt_state,
             'step': unreplicated_state.step,
-            'apply_fn': unreplicated_state.apply_fn,
+            'batch_stats': unreplicated_state.batch_stats,
+            'pos_encoding': unreplicated_state.pos_encoding,
         },
         metadata={
             'epoch': config["num_epochs"],

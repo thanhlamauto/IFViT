@@ -160,22 +160,22 @@ def dense_reg_dataset(
             
             if is_genuine:
                 # Genuine pair: original ↔ corrupted (same finger)
-                rng, corrupt_rng = jax.random.split(rng)
-                corrupted, transform = random_corrupt_fingerprint(
+            rng, corrupt_rng = jax.random.split(rng)
+            corrupted, transform = random_corrupt_fingerprint(
                     (img1 * 255).astype(np.float32), 
-                    corrupt_rng
-                )
-                corrupted = corrupted / 255.0
-                
-                # Generate GT correspondences
-                matches, valid = generate_gt_correspondences(
+                corrupt_rng
+            )
+            corrupted = corrupted / 255.0
+            
+            # Generate GT correspondences
+            matches, valid = generate_gt_correspondences(
                     img1, corrupted, transform, num_points=num_points
-                )
-                
+            )
+            
                 batch_img1.append(img1[..., None])
-                batch_img2.append(corrupted[..., None])
-                batch_matches.append(matches)
-                batch_valid.append(valid)
+            batch_img2.append(corrupted[..., None])
+            batch_matches.append(matches)
+            batch_valid.append(valid)
             else:
                 # Imposter pair: different fingers (GT "no match")
                 img2 = load_image(entry2.path)
