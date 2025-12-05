@@ -230,13 +230,20 @@ def train_step_fn(
         updated_batch_stats = updated_variables['batch_stats']
         updated_pos_encoding = updated_variables['pos_encoding']
         
+        # Get feature map shape from feat1 (H, W) for loss computation
+        # feat1 shape: (B, H, W, C) -> feature_shape = (H, W)
+        # Use jnp.array to avoid concretization errors with tracers
+        H_feat = jnp.array(feat1.shape[1], dtype=jnp.int32)
+        W_feat = jnp.array(feat1.shape[2], dtype=jnp.int32)
+        feature_shape = (H_feat, W_feat)  # (8, 8) for 128x128 input
+        
         # Compute loss
         losses = total_loss_dense(
             P=P,
             gt_matches=matches,
             valid_mask=valid_mask,
             lambda_D=lambda_D,
-            feature_shape=None
+            feature_shape=feature_shape
         )
         
         return losses['total'], (losses, updated_batch_stats, updated_pos_encoding)

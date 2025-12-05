@@ -46,11 +46,22 @@ def dense_reg_loss(
     
     if len(gt_matches.shape) == 3 and gt_matches.shape[-1] == 4:
         # gt_matches is (B, K, 4) format - convert to indices
-        # Assume feature_shape is provided
+        # feature_shape must be provided to avoid concretization errors
         if feature_shape is None:
-            H = W = jnp.sqrt(N).astype(jnp.int32)
+            # Fallback: compute from N, but use JAX operations only
+            # This should rarely happen if feature_shape is passed correctly
+            # Ensure N is a JAX array before sqrt
+            N_array = jnp.array(N, dtype=jnp.float32)
+            sqrt_N = jnp.sqrt(N_array)
+            H = W = sqrt_N.astype(jnp.int32)
         else:
-            H, W = feature_shape
+            # Convert to JAX arrays if they're not already
+            if isinstance(feature_shape, (tuple, list)):
+                H = jnp.array(feature_shape[0], dtype=jnp.int32)
+                W = jnp.array(feature_shape[1], dtype=jnp.int32)
+            else:
+                # Already JAX arrays or single value
+                H, W = feature_shape
         
         # Extract coordinates
         x1 = gt_matches[..., 0]  # (B, K)
