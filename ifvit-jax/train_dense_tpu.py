@@ -150,11 +150,13 @@ def create_train_state(config: Dict, rng: jax.random.PRNGKey) -> TrainState:
 # TPU-Optimized Training Step
 # ============================================================================
 
+# Global variable for lambda_D (set before pmap)
+LAMBDA_D = 1.0
+
 def train_step_fn(
     state: TrainState,
     batch: Dict[str, jnp.ndarray],
-    rng: jax.random.PRNGKey,
-    config: Dict
+    rng: jax.random.PRNGKey
 ) -> Tuple[TrainState, Dict[str, jnp.ndarray]]:
     """
     Single device training step (will be pmapped).
@@ -163,11 +165,13 @@ def train_step_fn(
         state: Current training state
         batch: Batch of data (already sharded per device)
         rng: Random key
-        config: Config dictionary
         
     Returns:
         Updated state and metrics dictionary
     """
+    # Use global lambda_D (set before creating pmap)
+    lambda_D = LAMBDA_D
+    
     def loss_fn(params):
         # Forward pass
         P, matches, feat1, feat2 = state.apply_fn(
@@ -183,7 +187,7 @@ def train_step_fn(
             P=P,
             gt_matches=batch['matches'],
             valid_mask=batch.get('valid_mask'),
-            lambda_D=config['lambda_D'],
+            lambda_D=lambda_D,
             feature_shape=None
         )
         
@@ -273,6 +277,10 @@ def train_dense_reg_tpu(
     rng = jax.random.PRNGKey(42)
     rng, init_rng = jax.random.split(rng)
     
+    # Set global lambda_D for training step
+    global LAMBDA_D
+    LAMBDA_D = config.get('lambda_D', 1.0)
+    
     # Create training state
     if resume_from:
         logger.log(f"Resuming from checkpoint: {resume_from}")
@@ -291,12 +299,11 @@ def train_dense_reg_tpu(
     state = jax_utils.replicate(state)
     
     # Create pmapped training step
-    # Note: config is a static argument (Python dict), not a JAX array
+    # Note: Removed config from function signature to avoid pmap issues with Python dicts
     train_step_pmap = jax.pmap(
         train_step_fn,
         axis_name='batch',
-        donate_argnums=(0,),  # Donate state buffer for efficiency
-        static_broadcasted_argnums=(3,)  # config is static (index 3: state, batch, rng, config)
+        donate_argnums=(0,)  # Donate state buffer for efficiency
     )
     
     # Training loop
@@ -354,12 +361,12 @@ def train_dense_reg_tpu(
                 # Shard batch
                 sharded_batch = shard_batch(batch, num_devices)
                 
-                # Shard RNG
+                # Shard RNG - split into per-device keys
+                # jax.random.split returns shape (num_devices, 2) which is correct for pmap
                 step_rngs = jax.random.split(rng, num_devices)
-                step_rngs = jax_utils.replicate(step_rngs)
                 
                 # Training step (pmapped)
-                state, metrics = train_step_pmap(state, sharded_batch, step_rngs, config)
+                state, metrics = train_step_pmap(state, sharded_batch, step_rngs)
                 
                 # Unreplicate metrics for logging
                 metrics = jax_utils.unreplicate(metrics)
