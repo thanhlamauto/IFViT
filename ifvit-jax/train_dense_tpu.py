@@ -155,7 +155,10 @@ LAMBDA_D = 1.0
 
 def train_step_fn(
     state: TrainState,
-    batch: Dict[str, jnp.ndarray],
+    img1: jnp.ndarray,
+    img2: jnp.ndarray,
+    matches: jnp.ndarray,
+    valid_mask: jnp.ndarray,
     rng: jax.random.PRNGKey
 ) -> Tuple[TrainState, Dict[str, jnp.ndarray]]:
     """
@@ -163,8 +166,11 @@ def train_step_fn(
     
     Args:
         state: Current training state
-        batch: Batch of data (already sharded per device)
-        rng: Random key
+        img1: (per_device_batch, H, W, 1) images
+        img2: (per_device_batch, H, W, 1) images
+        matches: (per_device_batch, K, 4) correspondences
+        valid_mask: (per_device_batch, K) validity mask
+        rng: Random key (shape: (2,))
         
     Returns:
         Updated state and metrics dictionary
@@ -174,10 +180,10 @@ def train_step_fn(
     
     def loss_fn(params):
         # Forward pass
-        P, matches, feat1, feat2 = state.apply_fn(
+        P, matches_out, feat1, feat2 = state.apply_fn(
             {'params': params},
-            batch['img1'],
-            batch['img2'],
+            img1,
+            img2,
             train=True,
             rngs={'dropout': rng}
         )
@@ -185,8 +191,8 @@ def train_step_fn(
         # Compute loss
         losses = total_loss_dense(
             P=P,
-            gt_matches=batch['matches'],
-            valid_mask=batch.get('valid_mask'),
+            gt_matches=matches,
+            valid_mask=valid_mask,
             lambda_D=lambda_D,
             feature_shape=None
         )
@@ -203,31 +209,38 @@ def train_step_fn(
     return state, metrics
 
 
-def shard_batch(batch: Dict[str, jnp.ndarray], num_devices: int) -> Dict[str, jnp.ndarray]:
+def shard_batch(batch: Dict[str, jnp.ndarray], num_devices: int) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
     """
-    Shard batch across devices.
+    Shard batch across devices and return as separate arrays.
     
     Args:
         batch: Batch dictionary
         num_devices: Number of TPU devices
         
     Returns:
-        Sharded batch (first dimension divided by num_devices)
+        Tuple of (img1, img2, matches, valid_mask) - all sharded
     """
-    sharded = {}
-    for key, value in batch.items():
-        if value is not None:
-            # Split batch dimension across devices
-            batch_size = value.shape[0]
-            per_device_batch = batch_size // num_devices
-            
-            # Reshape: (batch_size, ...) -> (num_devices, per_device_batch, ...)
-            new_shape = (num_devices, per_device_batch) + value.shape[1:]
-            sharded[key] = value.reshape(new_shape)
-        else:
-            sharded[key] = None
+    img1 = batch['img1']
+    img2 = batch['img2']
+    matches = batch['matches']
+    valid_mask = batch.get('valid_mask')
     
-    return sharded
+    # Split batch dimension across devices
+    batch_size = img1.shape[0]
+    per_device_batch = batch_size // num_devices
+    
+    # Reshape: (batch_size, ...) -> (num_devices, per_device_batch, ...)
+    img1_sharded = img1.reshape((num_devices, per_device_batch) + img1.shape[1:])
+    img2_sharded = img2.reshape((num_devices, per_device_batch) + img2.shape[1:])
+    matches_sharded = matches.reshape((num_devices, per_device_batch) + matches.shape[1:])
+    
+    if valid_mask is not None:
+        valid_mask_sharded = valid_mask.reshape((num_devices, per_device_batch) + valid_mask.shape[1:])
+    else:
+        # Create dummy valid_mask if None
+        valid_mask_sharded = jnp.ones((num_devices, per_device_batch, matches.shape[1]), dtype=bool)
+    
+    return img1_sharded, img2_sharded, matches_sharded, valid_mask_sharded
 
 
 # ============================================================================
@@ -358,15 +371,22 @@ def train_dense_reg_tpu(
                             pad = jnp.zeros(pad_shape, dtype=batch[key].dtype)
                             batch[key] = jnp.concatenate([batch[key], pad], axis=0)
                 
-                # Shard batch
-                sharded_batch = shard_batch(batch, num_devices)
+                # Shard batch and unpack for pmap
+                img1_sharded, img2_sharded, matches_sharded, valid_mask_sharded = shard_batch(batch, num_devices)
                 
                 # Shard RNG - split into per-device keys
                 # jax.random.split returns shape (num_devices, 2) which is correct for pmap
                 step_rngs = jax.random.split(rng, num_devices)
                 
                 # Training step (pmapped)
-                state, metrics = train_step_pmap(state, sharded_batch, step_rngs)
+                state, metrics = train_step_pmap(
+                    state,
+                    img1_sharded,
+                    img2_sharded,
+                    matches_sharded,
+                    valid_mask_sharded,
+                    step_rngs
+                )
                 
                 # Unreplicate metrics for logging
                 metrics = jax_utils.unreplicate(metrics)
