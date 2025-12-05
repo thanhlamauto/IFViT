@@ -369,9 +369,13 @@ def inspect_module2_complete(
     )
     
     print(f"\n  📊 Similarity Scores:")
-    print(f"    Global score: {float(score_global):.4f}")
-    print(f"    Local score:  {float(score_local):.4f}")
-    print(f"    Fused score:  {float(score_fused):.4f}")
+    # Convert JAX arrays to Python scalars
+    score_global_val = float(np.array(score_global)[0]) if score_global.ndim > 0 else float(score_global)
+    score_local_val = float(np.array(score_local)[0]) if score_local.ndim > 0 else float(score_local)
+    score_fused_val = float(np.array(score_fused)[0]) if score_fused.ndim > 0 else float(score_fused)
+    print(f"    Global score: {score_global_val:.4f}")
+    print(f"    Local score:  {score_local_val:.4f}")
+    print(f"    Fused score:  {score_fused_val:.4f}")
     
     # Count parameters
     param_count = sum(x.size for x in jax.tree_util.tree_leaves(params))
