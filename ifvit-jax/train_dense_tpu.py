@@ -254,7 +254,7 @@ def train_step_fn(
     
     # Average gradients and metrics across devices (critical for data parallelism)
     grads = jax.lax.pmean(grads, axis_name='batch')
-    metrics = jax.tree_map(lambda x: jax.lax.pmean(x, axis_name='batch'), metrics)
+    metrics = jax.tree.map(lambda x: jax.lax.pmean(x, axis_name='batch'), metrics)
     
     # Update parameters, batch_stats, and pos_encoding
     state = state.apply_gradients(grads=grads)
