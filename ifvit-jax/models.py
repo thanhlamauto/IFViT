@@ -588,8 +588,8 @@ class MatcherModel(nn.Module):
         feat_g2 = backbone(img2, train)
         
         if self.use_loftr:
-            feat_g1_flat, H_g, W_g = create_loftr_transformer(feat_g1, 'global')
-            feat_g2_flat, _, _ = create_loftr_transformer(feat_g2, 'global')
+            feat_g1_flat, H_g, W_g = create_loftr_transformer(feat_g1, 'global_1')
+            feat_g2_flat, _, _ = create_loftr_transformer(feat_g2, 'global_2')
             
             loftr_global = LocalFeatureTransformer(
                 d_model=self.hidden_dim,
@@ -612,8 +612,8 @@ class MatcherModel(nn.Module):
         feat_l2 = backbone(roi2, train)
         
         if self.use_loftr:
-            feat_l1_flat, H_l, W_l = create_loftr_transformer(feat_l1, 'local')
-            feat_l2_flat, _, _ = create_loftr_transformer(feat_l2, 'local')
+            feat_l1_flat, H_l, W_l = create_loftr_transformer(feat_l1, 'local_1')
+            feat_l2_flat, _, _ = create_loftr_transformer(feat_l2, 'local_2')
             
             loftr_local = LocalFeatureTransformer(
                 d_model=self.hidden_dim,
