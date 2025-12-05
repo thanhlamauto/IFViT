@@ -22,42 +22,54 @@ def map_pytorch_key_to_flax(pytorch_key: str, layer_idx: int, sublayer_idx: int)
     Map PyTorch parameter key to Flax parameter path.
     
     Args:
-        pytorch_key: PyTorch state dict key
+        pytorch_key: PyTorch state dict key (e.g., "loftr_coarse.layers.0.q_proj.weight")
         layer_idx: Layer index in the transformer
         sublayer_idx: Sublayer index (0 for feat0, 1 for feat1 in self-attn)
         
     Returns:
-        Flax parameter path
+        Flax parameter path (e.g., "layers.0.0/q_proj/kernel")
     """
-    # Remove prefix (e.g., "loftr_coarse.coarse_transformer.")
-    # This depends on the exact checkpoint structure
+    # Remove prefix (e.g., "loftr_coarse." or "loftr_coarse.coarse_transformer.")
+    # Extract the actual parameter name
     
-    # Example mapping:
-    # PyTorch: backbone.layer2.0.conv1.weight
-    # Flax: LocalFeatureTransformer/layers.0.0/q_proj/kernel
+    # Example keys:
+    # "loftr_coarse.layers.0.q_proj.weight" -> "layers.0.0/q_proj/kernel"
+    # "loftr_coarse.layers.0.norm1.weight" -> "layers.0.0/norm1/scale"
     
-    mapping = {
-        'linear_q.weight': f'layers.{layer_idx}.{sublayer_idx}/q_proj/kernel',
-        'linear_q.bias': f'layers.{layer_idx}.{sublayer_idx}/q_proj/bias',
-        'linear_k.weight': f'layers.{layer_idx}.{sublayer_idx}/k_proj/kernel',
-        'linear_k.bias': f'layers.{layer_idx}.{sublayer_idx}/k_proj/bias',
-        'linear_v.weight': f'layers.{layer_idx}.{sublayer_idx}/v_proj/kernel',
-        'linear_v.bias': f'layers.{layer_idx}.{sublayer_idx}/v_proj/bias',
-        'linear_out.weight': f'layers.{layer_idx}.{sublayer_idx}/merge/kernel',
-        'linear_out.bias': f'layers.{layer_idx}.{sublayer_idx}/merge/bias',
-        'ffn.0.weight': f'layers.{layer_idx}.{sublayer_idx}/mlp.0/kernel',
-        'ffn.0.bias': f'layers.{layer_idx}.{sublayer_idx}/mlp.0/bias',
-        'ffn.2.weight': f'layers.{layer_idx}.{sublayer_idx}/mlp.2/kernel',
-        'ffn.2.bias': f'layers.{layer_idx}.{sublayer_idx}/mlp.2/bias',
-        'norm1.weight': f'layers.{layer_idx}.{sublayer_idx}/norm1/scale',
-        'norm1.bias': f'layers.{layer_idx}.{sublayer_idx}/norm1/bias',
-        'norm2.weight': f'layers.{layer_idx}.{sublayer_idx}/norm2/scale',
-        'norm2.bias': f'layers.{layer_idx}.{sublayer_idx}/norm2/bias',
-    }
+    parts = pytorch_key.split('.')
     
-    for pt_suffix, flax_path in mapping.items():
-        if pytorch_key.endswith(pt_suffix):
-            return flax_path
+    # Find the parameter name (last part)
+    param_name = parts[-1]  # e.g., "weight", "bias"
+    param_type = parts[-2] if len(parts) >= 2 else None  # e.g., "q_proj", "norm1", "0" (for mlp.0)
+    
+    # Special handling for MLP: "loftr_coarse.layers.0.mlp.0.weight" -> "layers.0.0/mlp.0/kernel"
+    if 'mlp' in pytorch_key:
+        # Find mlp index (e.g., "0" or "2" in "mlp.0.weight")
+        mlp_idx = None
+        for i, part in enumerate(parts):
+            if part == 'mlp' and i + 1 < len(parts):
+                mlp_idx = parts[i + 1]  # e.g., "0" or "2"
+                break
+        
+        if mlp_idx is not None:
+            if param_name == 'weight':
+                return f'layers.{layer_idx}.{sublayer_idx}/mlp.{mlp_idx}/kernel'
+            elif param_name == 'bias':
+                return f'layers.{layer_idx}.{sublayer_idx}/mlp.{mlp_idx}/bias'
+    
+    # Map other parameter names
+    if param_name == 'weight':
+        if param_type in ['q_proj', 'k_proj', 'v_proj', 'merge']:
+            # Linear layer weights: transpose needed
+            return f'layers.{layer_idx}.{sublayer_idx}/{param_type}/kernel'
+        elif param_type in ['norm1', 'norm2']:
+            # LayerNorm weights: no transpose
+            return f'layers.{layer_idx}.{sublayer_idx}/{param_type}/scale'
+    elif param_name == 'bias':
+        if param_type in ['q_proj', 'k_proj', 'v_proj', 'merge']:
+            return f'layers.{layer_idx}.{sublayer_idx}/{param_type}/bias'
+        elif param_type in ['norm1', 'norm2']:
+            return f'layers.{layer_idx}.{sublayer_idx}/{param_type}/bias'
     
     return None
 
@@ -88,9 +100,18 @@ def convert_checkpoint(pytorch_ckpt_path: str, output_path: str, prefix: str = N
     if prefix:
         transformer_keys = {k: v for k, v in state_dict.items() if prefix in k}
         print(f"Filtered to {len(transformer_keys)} keys with prefix '{prefix}'")
+        
+        if len(transformer_keys) == 0:
+            print(f"\n⚠ Warning: No keys found with prefix '{prefix}'")
+            print("  Available keys (first 20):")
+            for i, k in enumerate(list(state_dict.keys())[:20]):
+                print(f"    {k}")
+            print("\n  Trying auto-detect...")
+            prefix = None  # Fall back to auto-detect
     else:
         # Try to auto-detect transformer keys
         possible_prefixes = [
+            'loftr_coarse',  # Most common format
             'loftr_coarse.coarse_transformer',
             'coarse_transformer',
             'local_transformer',
@@ -103,14 +124,17 @@ def convert_checkpoint(pytorch_ckpt_path: str, output_path: str, prefix: str = N
             if transformer_keys:
                 print(f"Auto-detected prefix: '{p}' ({len(transformer_keys)} keys)")
                 break
-        
-        if not transformer_keys:
-            print("⚠ Warning: No transformer keys found with common prefixes")
-            print("  Available keys sample:")
-            for i, k in enumerate(list(state_dict.keys())[:10]):
-                print(f"    {k}")
-            print("  Please specify --prefix manually")
-            return
+    
+    # If still no keys found, show all keys and let user choose
+    if not transformer_keys:
+        print("\n⚠ Warning: No transformer keys found with common prefixes")
+        print("  Available keys (first 30):")
+        for i, k in enumerate(list(state_dict.keys())[:30]):
+            print(f"    {k}")
+        if len(state_dict) > 30:
+            print(f"  ... and {len(state_dict) - 30} more keys")
+        print("\n  Please specify --prefix manually based on the keys above")
+        return
     
     # Convert to NumPy and map keys
     print("\nConverting weights to NumPy format...")
@@ -143,16 +167,17 @@ def convert_checkpoint(pytorch_ckpt_path: str, output_path: str, prefix: str = N
                 sublayer_idx = 0
             
             # Map key
-            flax_key = map_pytorch_key_to_flax('.'.join(parts), layer_idx, sublayer_idx)
+            flax_key = map_pytorch_key_to_flax(pytorch_key, layer_idx, sublayer_idx)
             
             if flax_key is None:
                 print(f"  ⚠ No mapping for: {pytorch_key}")
                 continue
             
             # Convert tensor to numpy
-            np_weight = pytorch_tensor.numpy()
+            np_weight = pytorch_tensor.detach().cpu().numpy()
             
             # Transpose weight matrices (PyTorch uses [out, in], Flax uses [in, out])
+            # Only transpose for linear layer kernels (not biases, not LayerNorm)
             if 'kernel' in flax_key and len(np_weight.shape) == 2:
                 np_weight = np_weight.T
             

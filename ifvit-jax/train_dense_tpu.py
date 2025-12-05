@@ -81,7 +81,9 @@ def create_train_state(config: Dict, rng: jax.random.PRNGKey) -> TrainState:
         num_heads=config["num_heads"],
         hidden_dim=config["hidden_dim"],
         mlp_dim=config["mlp_dim"],
-        dropout_rate=config["dropout_rate"]
+        dropout_rate=config["dropout_rate"],
+        use_loftr=config.get("use_loftr", True),
+        attention_type=config.get("attention_type", "linear")
     )
     
     # Create dummy input for initialization
@@ -91,6 +93,28 @@ def create_train_state(config: Dict, rng: jax.random.PRNGKey) -> TrainState:
     rng, init_rng = jax.random.split(rng)
     variables = model.init(init_rng, dummy_img, dummy_img, train=False)
     params = variables['params']
+    
+    # Load LoFTR pretrained weights if specified
+    loftr_ckpt = config.get("loftr_pretrained_ckpt")
+    if loftr_ckpt and Path(loftr_ckpt).exists():
+        print(f"\n{'='*60}")
+        print("Loading LoFTR Pretrained Weights")
+        print(f"{'='*60}")
+        print(f"Checkpoint: {loftr_ckpt}")
+        print(f"{'='*60}\n")
+        
+        try:
+            from ut.load_loftr_weights import load_loftr_weights, merge_params
+            
+            loftr_weights = load_loftr_weights(loftr_ckpt)
+            params = merge_params(params, loftr_weights, prefix='loftr_transformer')
+            print("✓ LoFTR weights loaded successfully\n")
+        except Exception as e:
+            print(f"⚠ Warning: Could not load LoFTR weights: {e}")
+            print("  Continuing with random initialization\n")
+    elif loftr_ckpt:
+        print(f"⚠ Warning: LoFTR checkpoint not found: {loftr_ckpt}")
+        print("  Continuing with random initialization\n")
     
     # Print model summary
     print_model_summary(params, "DenseRegModel")
@@ -267,10 +291,12 @@ def train_dense_reg_tpu(
     state = jax_utils.replicate(state)
     
     # Create pmapped training step
+    # Note: config is a static argument (Python dict), not a JAX array
     train_step_pmap = jax.pmap(
         train_step_fn,
         axis_name='batch',
-        donate_argnums=(0,)  # Donate state buffer for efficiency
+        donate_argnums=(0,),  # Donate state buffer for efficiency
+        static_broadcasted_argnums=(3,)  # config is static (index 3: state, batch, rng, config)
     )
     
     # Training loop
