@@ -49,11 +49,11 @@ echo ""
 
 docker run --rm \
   -v "$PROJECT_ROOT:/workspace" \
-  -w /workspace/IFViT/fingernet_jax \
+  -w /workspace/fingernet_jax \
   tensorflow/tensorflow:1.15.5-gpu-py3 \
   bash -c "
     echo 'Installing dependencies...'
-    pip install -q numpy scipy
+    pip install -q numpy scipy opencv-python matplotlib scipy
     
     echo 'Exporting weights...'
     python export_fingernet_weights_tf1.py

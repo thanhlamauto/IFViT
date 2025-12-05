@@ -18,12 +18,16 @@ import sys
 import numpy as np
 
 # Add FingerNet src to path
-FINGERNET_SRC_DIR = os.path.join(os.path.dirname(__file__), "..", "FingerNet", "src")
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+FINGERNET_SRC_DIR = os.path.join(SCRIPT_DIR, "..", "FingerNet", "src")
+FINGERNET_SRC_DIR = os.path.abspath(FINGERNET_SRC_DIR)
+
 if FINGERNET_SRC_DIR not in sys.path:
     sys.path.insert(0, FINGERNET_SRC_DIR)
 
 # Change to FingerNet src directory for imports
 original_cwd = os.getcwd()
+print(f"Changing to: {FINGERNET_SRC_DIR}")
 os.chdir(FINGERNET_SRC_DIR)
 
 # Set minimal argv for train_test_deploy.py
